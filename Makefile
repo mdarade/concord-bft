@@ -40,6 +40,10 @@ CONCORD_BFT_CMAKE_BUILD_SLOWDOWN?=FALSE
 CONCORD_BFT_CMAKE_BUILD_KVBC_BENCH?=TRUE
 
 
+# MakefileCustom may be useful for overriding the default variables
+# or adding custom targets. The include directive is ignored if MakefileCustom file does not exist.
+-include MakefileCustom
+
 CONCORD_BFT_CMAKE_FLAGS:= \
 			-DCMAKE_BUILD_TYPE=${CONCORD_BFT_CMAKE_BUILD_TYPE} \
 			-DBUILD_TESTING=${CONCORD_BFT_CMAKE_BUILD_TESTING} \
@@ -75,10 +79,6 @@ BASIC_RUN_PARAMS:=-it --init --rm --privileged=true \
 					  ${CONCORD_BFT_DOCKER_REPO}${CONCORD_BFT_DOCKER_IMAGE}:${CONCORD_BFT_DOCKER_IMAGE_VERSION}
 
 .DEFAULT_GOAL:=build
-
-# MakefileCustom may be useful for overriding the default variables
-# or adding custom targets. The include directive is ignored if MakefileCustom file does not exist.
--include MakefileCustom
 
 IF_CONTAINER_RUNS=$(shell docker container inspect -f '{{.State.Running}}' ${CONCORD_BFT_DOCKER_CONTAINER} 2>/dev/null)
 
@@ -118,6 +118,14 @@ build: gen_cmake ## Build Concord-BFT source. In order to build a specific targe
 		${CONCORD_BFT_CONTAINER_SHELL} -c \
 		"cd ${CONCORD_BFT_BUILD_DIR} && \
 		make format-check && \
+		make -j $$(nproc) ${TARGET}"
+	@echo
+	@echo "Build finished. The binaries are in ${CURDIR}/${CONCORD_BFT_BUILD_DIR}"
+
+build-q: gen_cmake ## Build Concord-BFT source. In order to build a specific target run: make TARGET=<target name>.
+	docker run ${CONCORD_BFT_USER_GROUP} ${BASIC_RUN_PARAMS} \
+		${CONCORD_BFT_CONTAINER_SHELL} -c \
+		"cd ${CONCORD_BFT_BUILD_DIR} && \
 		make -j $$(nproc) ${TARGET}"
 	@echo
 	@echo "Build finished. The binaries are in ${CURDIR}/${CONCORD_BFT_BUILD_DIR}"

@@ -91,6 +91,10 @@ class ReplicaBase {
 
       msg->validate(*repsInfo);
       return true;
+    } catch (ClientSignatureVerificationFailedException& e) {
+      handle here
+      return false;
+    }
     } catch (std::exception& e) {
       onReportAboutInvalidMessage(msg, e.what());
       return false;

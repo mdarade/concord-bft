@@ -9,11 +9,13 @@
 // these subcomponents is subject to the terms and conditions of the subcomponent's license, as noted in the LICENSE
 // file.
 
-#include <cstring>
-#include <bftengine/SimpleClient.hpp>
+#include "bftengine/SimpleClient.hpp"
 #include "ClientRequestMsg.hpp"
 #include "assertUtils.hpp"
 #include "ReplicaConfig.hpp"
+#include "SigManager.hpp"
+
+#include <cstring>
 
 namespace bftEngine::impl {
 
@@ -43,14 +45,30 @@ ClientRequestMsg::ClientRequestMsg(NodeIdType sender,
     : MessageBase(sender,
                   MsgCode::ClientRequest,
                   spanContext.data().size(),
-                  (sizeof(ClientRequestMsgHeader) + requestLength + cid.size())) {
+                  sizeof(ClientRequestMsgHeader) + requestLength + cid.size()),
+      sigManager_(SigManager::getInstance()) {
+  // set header
   setParams(sender, reqSeqNum, requestLength, flags, reqTimeoutMilli, cid);
+
+  // set span context
   char* position = body() + sizeof(ClientRequestMsgHeader);
   memcpy(position, spanContext.data().data(), spanContext.data().size());
+
+  // set request data
   position += spanContext.data().size();
   memcpy(position, request, requestLength);
+
+  // set correlation ID
   position += requestLength;
   memcpy(position, cid.data(), cid.size());
+
+  // set signature
+  if (sigManager_->isClientTransactionSigningEnabled()) {
+    position += cid.size();
+    MsgSize sigLen = sigManager_->getSigLength(sender);
+    memcpy(position, position, sigLen);
+    msgSize_ += sigLen;
+  }
 }
 
 ClientRequestMsg::ClientRequestMsg(NodeIdType sender)
@@ -63,11 +81,40 @@ ClientRequestMsg::ClientRequestMsg(ClientRequestMsgHeader* body)
 
 bool ClientRequestMsg::isReadOnly() const { return (msgBody()->flags & READ_ONLY_REQ) != 0; }
 
+// yulia has bug here, seperate commits of this bug fix ================
 void ClientRequestMsg::validate(const ReplicasInfo& repInfo) const {
   ConcordAssert(senderId() != repInfo.myId());
-  if (size() < sizeof(ClientRequestMsgHeader) ||
-      size() < (sizeof(ClientRequestMsgHeader) + msgBody()->requestLength + msgBody()->cidLength + spanContextSize()))
+  auto minMsgSize = sizeof(ClientRequestMsgHeader) + msgBody()->cidLength + spanContextSize();
+  const auto msgSize = size();
+  auto expectedMsgSize = msgSize + msgBody()->requestLength;
+  bool validateSig = sigManager_->isClientTransactionSigningEnabled();
+  uint16_t sigLen;
+
+  if (validateSig) {
+    sigLen = sigManager_->getSigLength(senderId());
+    if (sigLen == 0) {
+      std::stringstream msg;
+      msg << "Failed to get signature length for senderid " << senderId();
+      throw std::runtime_error(msg.str());
+    }
+    expectedMsgSize += sigLen;
+    minMsgSize += sigLen;
+  }
+
+  if ((msgSize < minMsgSize) || (size() != expectedMsgSize)) {
     throw std::runtime_error(__PRETTY_FUNCTION__);
+  }
+
+  if (validateSig) {
+    const char* signature =
+        body() + sizeof(ClientRequestMsgHeader) + spanContextSize() + msgBody()->requestLength + msgBody()->cidLength;
+    if (!sigManager_->verifySig(senderId(), requestBuf(), msgBody()->requestLength, signature, sigLen)) {
+      std::stringstream msg;
+      msg << "Signature verification failed for senderid " << senderId() << " and requestLength "
+          << msgBody()->requestLength;
+      throw ClientSignatureVerificationFailedException(msg.str());
+    }
+  }
 }
 
 void ClientRequestMsg::setParams(NodeIdType sender,

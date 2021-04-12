@@ -112,7 +112,7 @@ SigManager::SigManager(PrincipalId myId,
   map<KeyIndex, RSAVerifier*> publicKeyIndexToVerifier;
   size_t numPublickeys = publickeys.size();
   ConcordAssert(publicKeysMapping.size() >= numPublickeys);
-  ConcordAssert(numPublickeys > 0);
+  ConcordAssert(numPublickeys + 1 >= numReplicas);
 
   mySigner_ = new RSASigner(mySigPrivateKey.first.c_str(), mySigPrivateKey.second);
   for (const auto& p : publicKeysMapping) {
@@ -129,7 +129,7 @@ SigManager::SigManager(PrincipalId myId,
       verifiers_[p.first] = iter->second;
   }
 
-  // This is done for debugging and sanity check:
+  // This is done mainly for debugging and sanity check:
   // compute a vector which counts how many participants and which are per each key:
   vector<set<PrincipalId>> keyIndexToPrincipalIds(publickeys.size());
   for (auto& principalIdToKeyIndex : publicKeysMapping) {
@@ -148,6 +148,12 @@ SigManager::SigManager(PrincipalId myId,
   LOG_INFO(GL,
            "Signature Manager initialized with own private key, "
                << verifiers_.size() << " verifiers and " << publicKeyIndexToVerifier.size() << " other principals");
+
+  // When transaction signing enabled, numPublickeys must be greater than numReplicas-1.
+  // My own public key was not inserted into the container
+  if (numPublickeys + 1 > numReplicas) {
+    clientTransactionSigningEnabled = true;
+  }
   ConcordAssert(verifiers_.size() >= publickeys.size());
 }
 

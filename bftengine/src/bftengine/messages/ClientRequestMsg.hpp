@@ -63,6 +63,7 @@ class ClientRequestMsg : public MessageBase {
 
  protected:
   ClientRequestMsgHeader* msgBody() const { return ((ClientRequestMsgHeader*)msgBody_); }
+  SigManager* sigManager_;
 
  private:
   void setParams(NodeIdType sender,

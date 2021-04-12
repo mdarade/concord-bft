@@ -61,7 +61,12 @@ bool PreProcessor::validateMessage(MessageBase *msg) const {
   try {
     msg->validate(myReplica_.getReplicasInfo());
     return true;
-  } catch (std::exception &e) {
+  }
+  cathed(ClientSignatureVerificationFailedException & e) {
+    preProcessorMetrics_.preProcReqSigVerFailed.Get().Inc();
+    return false;
+  }
+  catch (std::exception &e) {
     LOG_WARN(logger(),
              "Received invalid message from Node " << msg->senderId() << " type: " << msg->type()
                                                    << " reason: " << e.what());
@@ -94,6 +99,7 @@ PreProcessor::PreProcessor(shared_ptr<MsgsCommunicator> &msgsCommunicator,
       preProcessorMetrics_{metricsComponent_.RegisterCounter("preProcReqReceived"),
                            metricsComponent_.RegisterCounter("preProcReqInvalid"),
                            metricsComponent_.RegisterCounter("preProcReqIgnored"),
+                           metricsComponent_.RegisterCounter("preProcReqSigVerFailed"),
                            metricsComponent_.RegisterCounter("preProcConsensusNotReached"),
                            metricsComponent_.RegisterCounter("preProcessRequestTimedout"),
                            metricsComponent_.RegisterCounter("preProcReqSentForFurtherProcessing"),
@@ -384,6 +390,10 @@ void PreProcessor::handleSingleClientRequestMessage(ClientPreProcessReqMsgUnique
   PreProcessRequestMsgSharedPtr preProcessRequestMsg;
   LOG_DEBUG(logger(), KVLOG(reqSeqNum, clientId, senderId, arrivedInBatch, msgOffsetInBatch));
   bool registerSucceeded = false;
+
+  if (arrivedInBatch && !validateMessage(trueTypeObj)) {
+    return;
+  }
   {
     const auto &reqEntry = ongoingRequests_[getOngoingReqIndex(clientId, msgOffsetInBatch)];
     lock_guard<mutex> lock(reqEntry->mutex);

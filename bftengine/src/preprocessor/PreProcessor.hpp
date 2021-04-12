@@ -206,6 +206,7 @@ class PreProcessor {
     concordMetrics::CounterHandle preProcReqReceived;
     concordMetrics::CounterHandle preProcReqInvalid;
     concordMetrics::CounterHandle preProcReqIgnored;
+    concordMetrics::CounterHandle preProcReqSigVerFailed;
     concordMetrics::CounterHandle preProcConsensusNotReached;
     concordMetrics::CounterHandle preProcessRequestTimedout;
     concordMetrics::CounterHandle preProcReqSentForFurtherProcessing;

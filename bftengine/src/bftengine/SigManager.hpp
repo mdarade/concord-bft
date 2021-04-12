@@ -51,6 +51,7 @@ class SigManager {
   bool verifySig(PrincipalId pid, const char* data, size_t dataLength, const char* sig, uint16_t sigLength) const;
   void sign(const char* data, size_t dataLength, char* outSig, uint16_t outSigLength) const;
   uint16_t getMySigLength() const;
+  bool isClientTransactionSigningEnabled() { return clientTransactionSigningEnabled; }
 
   SigManager(const SigManager&) = delete;
   SigManager& operator=(const SigManager&) = delete;
@@ -62,6 +63,7 @@ class SigManager {
   const PrincipalId myId_;
   RSASigner* mySigner_;
   std::map<PrincipalId, RSAVerifier*> verifiers_;
+  bool clientTransactionSigningEnabled = true;
 
   SigManager(PrincipalId myId,
              uint16_t numReplicas,
