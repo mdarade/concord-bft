@@ -455,11 +455,17 @@ class BCStateTran : public IStateTransfer {
   struct Recorders {
     Recorders() {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
-      registrar.perf.registerComponent("state_transfer", {fetch_blocks_msg_latency, on_timer});
+      registrar.perf.registerComponent("state_transfer",
+        {fetch_blocks_msg_latency, on_timer, put_block_latency});
     }
     DEFINE_SHARED_RECORDER(
         fetch_blocks_msg_latency, 1, MAX_VALUE_MILLISECONDS, 3, concord::diagnostics::Unit::MILLISECONDS);
     DEFINE_SHARED_RECORDER(on_timer, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(put_block_latency, 1, MAX_VALUE_MICROSECONDS, 3,
+      concord::diagnostics::Unit::MICROSECONDS);
+    
+    uint64_t sum_put_block_latency_;
+    uint64_t sum_pending_data_exec_time_;
   };
   Recorders histograms_;
 

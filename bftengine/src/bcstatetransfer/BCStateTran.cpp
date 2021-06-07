@@ -225,6 +225,8 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterGauge("prev_win_blocks_throughtput", 0),
                metrics_component_.RegisterGauge("prev_win_bytes_collected", 0),
                metrics_component_.RegisterGauge("prev_win_bytes_throughtput", 0)},
+               
+               //metrics_component_.RegisterGauge("handoff_queue_size", 0)},
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
@@ -645,6 +647,7 @@ void BCStateTran::onTimerImp() {
   concord::diagnostics::TimeRecorder scoped_timer(*histograms_.on_timer);
 
   metrics_.on_timer_.Get().Inc();
+  //metrics_.handoff_queue_size_.Set(handoff_.getQueueSize());
   // Send all metrics to the aggregator
   metrics_component_.UpdateAggregator();
 
@@ -2098,8 +2101,12 @@ void BCStateTran::processData() {
 
   const uint64_t currTime = getMonotonicTimeMilli();
   bool badDataFromCurrentSourceReplica = false;
+  bool processedData = false;
+  std::chrono::steady_clock::time_point start;
+
 
   while (true) {
+
     //////////////////////////////////////////////////////////////////////////
     // if needed, select a source replica
     //////////////////////////////////////////////////////////////////////////
@@ -2172,8 +2179,14 @@ void BCStateTran::processData() {
                                            lastInBatch);
     bool newBlockIsValid = false;
 
+    if (actualBlockSize) {
+      start = std::chrono::steady_clock::now();
+    }
+
     if (newBlock && isGettingBlocks) {
       ConcordAssert(!badDataFromCurrentSourceReplica);
+      //FIXME:mdarade
+      //Measure validation time too
       newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_, actualBlockSize);
       badDataFromCurrentSourceReplica = !newBlockIsValid;
     } else if (newBlock && !isGettingBlocks) {
@@ -2190,10 +2203,12 @@ void BCStateTran::processData() {
 
     LOG_DEBUG(getLogger(), KVLOG(newBlock, newBlockIsValid, actualBlockSize));
 
+
     //////////////////////////////////////////////////////////////////////////
     // if we have a new block
     //////////////////////////////////////////////////////////////////////////
     if (newBlockIsValid && isGettingBlocks) {
+      processedData = true;
       DataStoreTransaction::Guard g(psd_->beginTransaction());
       sourceSelector_.setSourceSelectionTime(currTime);
 
@@ -2201,8 +2216,14 @@ void BCStateTran::processData() {
 
       LOG_DEBUG(getLogger(), "Add block: " << KVLOG(nextRequiredBlock_, actualBlockSize));
 
-      ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
-
+      {
+        concord::diagnostics::TimeRecorder scoped_timer(*histograms_.put_block_latency);
+        auto startp = std::chrono::steady_clock::now();
+        ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+        auto interval =
+          std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - startp);
+        histograms_.sum_put_block_latency_ += interval.count();
+      }
       const uint64_t firstRequiredBlock = g.txn()->getFirstRequiredBlock();
       reportCollectingStatus(firstRequiredBlock, actualBlockSize);
       if (firstRequiredBlock < nextRequiredBlock_) {
@@ -2236,6 +2257,7 @@ void BCStateTran::processData() {
     // if we have a new vblock
     //////////////////////////////////////////////////////////////////////////
     else if (newBlockIsValid && !isGettingBlocks) {
+      processedData = true;
       DataStoreTransaction::Guard g(psd_->beginTransaction());
       sourceSelector_.setSourceSelectionTime(currTime);
 
@@ -2312,6 +2334,12 @@ void BCStateTran::processData() {
       }
       break;
     }
+  }
+
+  if (processedData) {
+    auto interval =
+          std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
+    histograms_.sum_pending_data_exec_time_ += interval.count();
   }
 }
 

@@ -91,6 +91,11 @@ class Handoff {
     return logger_;
   }
 
+  size_t getQueueSize() {
+    guard g(queue_lock_);
+    return task_queue_.size();
+  }
+
  protected:
   std::queue<func_type> task_queue_;
   std::mutex queue_lock_;
