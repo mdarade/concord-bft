@@ -285,6 +285,7 @@ class BCStateTran : public IStateTransfer {
                         uint32_t& outBlockSize,
                         bool isVBLock,
                         bool& outLastInBatch);
+  void getBlock(uint64_t blockId, char* outBlock, uint32_t* outBlockSize);
 
   bool checkBlock(uint64_t blockNum, const STDigest& expectedBlockDigest, char* block, uint32_t blockSize) const;
 
@@ -409,7 +410,13 @@ class BCStateTran : public IStateTransfer {
     CounterHandle zero_reserved_page_;
     CounterHandle start_collecting_state_;
     CounterHandle on_timer_;
-
+    CounterHandle handle_state_transfer_message_;
+    CounterHandle handle_AskForCheckpointSummaries_message_;
+    CounterHandle handle_CheckpointsSummary_message_;
+    CounterHandle handle_FetchBlocks_message_;
+    CounterHandle handle_FetchResPages_message_;
+    CounterHandle handle_RejectFetching_message_;
+    CounterHandle handle_ItemData_message_;
     CounterHandle on_transferring_complete_;
 
     GaugeHandle overall_blocks_collected_;
@@ -444,23 +451,56 @@ class BCStateTran : public IStateTransfer {
   // Latency Historgrams
   ///////////////////////////////////////////////////////////////////////////
  private:
-  static constexpr int64_t MAX_VALUE_MILLISECONDS = 1000 * 60;  // 60 Seconds
-  static constexpr int64_t MAX_VALUE_MICROSECONDS = 1000 * 1000 * 60;
+  static constexpr uint64_t MAX_VALUE_MICROSECONDS = 60ULL * 1000ULL * 1000ULL; // 60 seconds
+  static constexpr uint64_t MAX_BLOCK_SIZE = 100ULL * 1024ULL * 1024ULL;              // 100MB
+  static constexpr uint64_t MAX_BATCH_SIZE_BYTES = 10ULL * 1024ULL * 1024ULL * 1024ULL;  // 10GB
+  static constexpr uint64_t MAX_BATCH_SIZE_BLOCKS = 1000ULL;
   using Recorder = concord::diagnostics::Recorder;
 
   struct Recorders {
     Recorders() {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
-      registrar.perf.registerComponent("state_transfer", {fetch_blocks_msg_latency, on_timer});
+      registrar.perf.registerComponent("state_transfer",
+                                       {fetch_blocks_msg_latency,
+                                        on_timer,
+                                        handle_state_transfer_message,
+                                        handle_AskForCheckpointSummaries_message,
+                                        handle_CheckpointsSummary_message,
+                                        handle_FetchBlocks_message,
+                                        handle_FetchResPages_message,
+                                        handle_RejectFetching_message,
+                                        handle_ItemData_message,
+                                        src_get_block_duration,
+                                        src_get_block_size_bytes,
+                                        src_send_batch_duration,
+                                        src_send_batch_size_bytes,
+                                       src_send_batch_size_blocks});
     }
     DEFINE_SHARED_RECORDER(
-        fetch_blocks_msg_latency, 1, MAX_VALUE_MILLISECONDS, 3, concord::diagnostics::Unit::MILLISECONDS);
+        fetch_blocks_msg_latency, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    // main callbacks historgrams
     DEFINE_SHARED_RECORDER(on_timer, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_state_transfer_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    // message handling historgrams
+    DEFINE_SHARED_RECORDER(handle_AskForCheckpointSummaries_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_CheckpointsSummary_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_FetchBlocks_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_FetchResPages_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_RejectFetching_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_ItemData_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    // source historgrams
+    DEFINE_SHARED_RECORDER(
+        src_get_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(src_get_block_size_bytes, 1, MAX_BLOCK_SIZE, 3, concord::diagnostics::Unit::BYTES);
+    DEFINE_SHARED_RECORDER(src_send_batch_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(src_send_batch_size_bytes, 1, MAX_BATCH_SIZE_BYTES, 3, concord::diagnostics::Unit::BYTES);
+    DEFINE_SHARED_RECORDER(src_send_batch_size_blocks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
   };
   Recorders histograms_;
 
   // Record latency for FetchBlockMsg <-> ItemDataMsg. These messages are sent multiple times between dest and src
-  concord::diagnostics::AsyncTimeRecorderMap<SeqNum, true> fetch_block_msg_latency_rec_;
+  concord::diagnostics::AsyncTimeRecorderMap<SeqNum, true> fetch_block_msg_latency_rec_;  // todo - remove or fix
+  concord::diagnostics::AsyncTimeRecorder<false> src_send_batch_duration_rec_; // async recorder for src_send_batch_duration
 
 };  // namespace bftEngine::bcst::impl
 
