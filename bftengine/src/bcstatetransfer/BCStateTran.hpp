@@ -46,7 +46,11 @@ using std::string;
 using concordMetrics::StatusHandle;
 using concordMetrics::GaugeHandle;
 using concordMetrics::CounterHandle;
+using concordMetrics::AtomicGaugeHandle;
+using concordMetrics::AtomicCounterHandle;
 using concord::util::Throughput;
+using concord::diagnostics::Recorder;
+using concord::diagnostics::AsyncTimeRecorder;
 
 namespace bftEngine::bcst::impl {
 
@@ -93,7 +97,9 @@ class BCStateTran : public IStateTransfer {
 
   std::string getStatus() override;
 
-  void addOnTransferringCompleteCallback(std::function<void(uint64_t)>) override;
+  void addOnTransferringCompleteCallback(
+      std::function<void(uint64_t)>,
+      StateTransferCallBacksPriorities priority = StateTransferCallBacksPriorities::DEFAULT) override;
 
   void setEraseMetadataFlag() override { psd_->setEraseDataStoreFlag(); }
 
@@ -369,7 +375,7 @@ class BCStateTran : public IStateTransfer {
     GaugeHandle next_required_block_;
     GaugeHandle num_pending_item_data_msgs_;
     GaugeHandle total_size_of_pending_item_data_msgs_;
-    GaugeHandle last_block_;
+    AtomicGaugeHandle last_block_;
     GaugeHandle last_reachable_block_;
 
     CounterHandle sent_ask_for_checkpoint_summaries_msg_;
@@ -401,22 +407,22 @@ class BCStateTran : public IStateTransfer {
     CounterHandle invalid_item_data_msg_;
     CounterHandle irrelevant_item_data_msg_;
 
-    CounterHandle create_checkpoint_;
+    AtomicCounterHandle create_checkpoint_;
     CounterHandle mark_checkpoint_as_stable_;
     CounterHandle load_reserved_page_;
     CounterHandle load_reserved_page_from_pending_;
-    CounterHandle load_reserved_page_from_checkpoint_;
-    CounterHandle save_reserved_page_;
+    AtomicCounterHandle load_reserved_page_from_checkpoint_;
+    AtomicCounterHandle save_reserved_page_;
     CounterHandle zero_reserved_page_;
     CounterHandle start_collecting_state_;
     CounterHandle on_timer_;
-    CounterHandle handle_state_transfer_message_;
-    CounterHandle handle_AskForCheckpointSummaries_message_;
-    CounterHandle handle_CheckpointsSummary_message_;
-    CounterHandle handle_FetchBlocks_message_;
-    CounterHandle handle_FetchResPages_message_;
-    CounterHandle handle_RejectFetching_message_;
-    CounterHandle handle_ItemData_message_;
+    CounterHandle handle_state_transfer_msg_;
+    CounterHandle handle_AskForCheckpointSummaries_msg_;
+    CounterHandle handle_CheckpointsSummary_msg_;
+    CounterHandle handle_FetchBlocks_msg_;
+    CounterHandle handle_FetchResPages_msg_;
+    CounterHandle handle_RejectFetching_msg_;
+    CounterHandle handle_ItemData_msg_;
     CounterHandle on_transferring_complete_;
 
     GaugeHandle overall_blocks_collected_;
@@ -431,7 +437,7 @@ class BCStateTran : public IStateTransfer {
 
   mutable Metrics metrics_;
 
-  concord::util::CallbackRegistry<uint64_t> on_transferring_complete_cb_registry_;
+  std::map<uint64_t, concord::util::CallbackRegistry<uint64_t>> on_transferring_complete_cb_registry_;
 
   ///////////////////////////////////////////////////////////////////////////
   // Internal Statistics
@@ -455,7 +461,7 @@ class BCStateTran : public IStateTransfer {
   static constexpr uint64_t MAX_BLOCK_SIZE = 100ULL * 1024ULL * 1024ULL;              // 100MB
   static constexpr uint64_t MAX_BATCH_SIZE_BYTES = 10ULL * 1024ULL * 1024ULL * 1024ULL;  // 10GB
   static constexpr uint64_t MAX_BATCH_SIZE_BLOCKS = 1000ULL;
-  using Recorder = concord::diagnostics::Recorder;
+  
 
   struct Recorders {
     Recorders() {
@@ -463,31 +469,31 @@ class BCStateTran : public IStateTransfer {
       registrar.perf.registerComponent("state_transfer",
                                        {fetch_blocks_msg_latency,
                                         on_timer,
-                                        handle_state_transfer_message,
-                                        handle_AskForCheckpointSummaries_message,
-                                        handle_CheckpointsSummary_message,
-                                        handle_FetchBlocks_message,
-                                        handle_FetchResPages_message,
-                                        handle_RejectFetching_message,
-                                        handle_ItemData_message,
+                                       handle_state_transfer_msg,
+                                        handle_AskForCheckpointSummaries_msg,
+                                        handle_CheckpointsSummary_msg,
+                                        handle_FetchBlocks_msg,
+                                        handle_FetchResPages_msg,
+                                        handle_RejectFetching_msg,
+                                        handle_ItemData_msg,
                                         src_get_block_duration,
                                         src_get_block_size_bytes,
                                         src_send_batch_duration,
                                         src_send_batch_size_bytes,
-                                       src_send_batch_size_blocks});
+                                        src_send_batch_size_blocks});
     }
     DEFINE_SHARED_RECORDER(
         fetch_blocks_msg_latency, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // main callbacks historgrams
     DEFINE_SHARED_RECORDER(on_timer, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(handle_state_transfer_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_state_transfer_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // message handling historgrams
-    DEFINE_SHARED_RECORDER(handle_AskForCheckpointSummaries_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(handle_CheckpointsSummary_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(handle_FetchBlocks_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(handle_FetchResPages_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(handle_RejectFetching_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
-    DEFINE_SHARED_RECORDER(handle_ItemData_message, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_AskForCheckpointSummaries_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_CheckpointsSummary_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_FetchBlocks_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_FetchResPages_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_RejectFetching_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(handle_ItemData_msg, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // source historgrams
     DEFINE_SHARED_RECORDER(
         src_get_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
@@ -500,8 +506,13 @@ class BCStateTran : public IStateTransfer {
 
   // Record latency for FetchBlockMsg <-> ItemDataMsg. These messages are sent multiple times between dest and src
   concord::diagnostics::AsyncTimeRecorderMap<SeqNum, true> fetch_block_msg_latency_rec_;  // todo - remove or fix
-  concord::diagnostics::AsyncTimeRecorder<false> src_send_batch_duration_rec_; // async recorder for src_send_batch_duration
 
+  // sync time recorders - wrap the above shared recorders
+  AsyncTimeRecorder<false> src_send_batch_duration_rec_;
+
+  // An array of size MsgTypeLast which holds the total processing time for each message size during ST cycle.
+  // index 0 holds the total for all messages
+  std::array<uint64_t, MsgType::MsgTypeLast> total_processing_time_microsec_;
 };  // namespace bftEngine::bcst::impl
 
 }  // namespace bftEngine::bcst::impl

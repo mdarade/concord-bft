@@ -540,7 +540,7 @@ void ReplicaImp::startConsensusProcess(PrePrepareMsg *pp, bool isInternalNoop) {
     LOG_INFO(CNSUS,
              "Sending PrePrepare message" << KVLOG(pp->numberOfRequests())
                                           << " correlation ids: " << pp->getBatchCorrelationIdAsString()
-                                          << ", commit path: " << CommitPathToStr(firstPath));
+                                          << " commit path: " << CommitPathToStr(firstPath));
     consensus_times_.start(primaryLastUsedSeqNum);
   }
 
@@ -561,8 +561,12 @@ void ReplicaImp::startConsensusProcess(PrePrepareMsg *pp, bool isInternalNoop) {
 
   {
     TimeRecorder scoped_timer(*histograms_.broadcastPrePrepare);
-    for (ReplicaId x : repsInfo->idsOfPeerReplicas()) {
-      sendRetransmittableMsgToReplica(pp, x, primaryLastUsedSeqNum);
+    if (!retransmissionsLogicEnabled) {
+      sendToAllOtherReplicas(pp);
+    } else {
+      for (ReplicaId x : repsInfo->idsOfPeerReplicas()) {
+        sendRetransmittableMsgToReplica(pp, x, primaryLastUsedSeqNum);
+      }
     }
   }
 
@@ -708,9 +712,10 @@ void ReplicaImp::onMessage<PrePrepareMsg>(PrePrepareMsg *msg) {
         LOG_INFO(CNSUS, "Internal NOOP PrePrepare received, commit path: " << CommitPathToStr(msg->firstPath()));
       } else {
         LOG_INFO(CNSUS,
-                 "PrePrepare with the following correlation IDs ["
-                     << msg->getBatchCorrelationIdAsString()
-                     << "], commit path: " << CommitPathToStr(msg->firstPath()));
+                 "Received PrePrepare message" << KVLOG(msg->numberOfRequests())
+                                               << " with the following correlation IDs ["
+                                               << msg->getBatchCorrelationIdAsString()
+                                               << "], commit path: " << CommitPathToStr(msg->firstPath()));
       }
       msgAdded = true;
 
@@ -807,8 +812,12 @@ void ReplicaImp::tryToStartSlowPaths() {
 
     StartSlowCommitMsg *startSlow = new StartSlowCommitMsg(config_.getreplicaId(), curView, i);
 
-    for (ReplicaId x : repsInfo->idsOfPeerReplicas()) {
-      sendRetransmittableMsgToReplica(startSlow, x, i);
+    if (!retransmissionsLogicEnabled) {
+      sendToAllOtherReplicas(startSlow);
+    } else {
+      for (ReplicaId x : repsInfo->idsOfPeerReplicas()) {
+        sendRetransmittableMsgToReplica(startSlow, x, i);
+      }
     }
 
     delete startSlow;
@@ -1184,7 +1193,7 @@ std::string ReplicaImp::getReplicaLastStableSeqNum() const {
 
   nested_data.insert(toPair(getName(lastStableSeqNum), lastStableSeqNum));
   result.insert(
-      toPair("Sequence Numbers ", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
+      toPair("sequenceNumbers ", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
 
   oss << concordUtils::kContainerToJson(result);
   return oss.str();
@@ -1195,9 +1204,9 @@ std::string ReplicaImp::getReplicaState() const {
   std::ostringstream oss;
   std::unordered_map<std::string, std::string> result, nested_data;
 
-  result.insert(toPair("Replica ID", std::to_string(getReplicasInfo().myId())));
+  result.insert(toPair("replicaID", std::to_string(getReplicasInfo().myId())));
 
-  result.insert(toPair("Primary ", std::to_string(primary)));
+  result.insert(toPair("primary", std::to_string(primary)));
 
   nested_data.insert(toPair(getName(viewChangeProtocolEnabled), viewChangeProtocolEnabled));
   nested_data.insert(toPair(getName(autoPrimaryRotationEnabled), autoPrimaryRotationEnabled));
@@ -1208,7 +1217,7 @@ std::string ReplicaImp::getReplicaState() const {
   nested_data.insert(toPair(getName(viewChangeTimerMilli), viewChangeTimerMilli));
   nested_data.insert(toPair(getName(autoPrimaryRotationTimerMilli), autoPrimaryRotationTimerMilli));
   result.insert(
-      toPair("View Change ", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
+      toPair("viewChange", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
   nested_data.clear();
 
   nested_data.insert(toPair(getName(primaryLastUsedSeqNum), primaryLastUsedSeqNum));
@@ -1221,7 +1230,7 @@ std::string ReplicaImp::getReplicaState() const {
   nested_data.insert(
       toPair(getName(lastViewThatTransferredSeqNumbersFullyExecuted), lastViewThatTransferredSeqNumbersFullyExecuted));
   result.insert(
-      toPair("Sequence Numbers ", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
+      toPair("sequenceNumbers", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
   nested_data.clear();
 
   nested_data.insert(toPair(getName(restarted_), restarted_));
@@ -1528,7 +1537,13 @@ void ReplicaImp::onPrepareCombinedSigSucceeded(SeqNum seqNumber,
     ps_->endWriteTran();
   }
 
-  for (ReplicaId x : repsInfo->idsOfPeerReplicas()) sendRetransmittableMsgToReplica(preFull, x, seqNumber);
+  if (!retransmissionsLogicEnabled) {
+    sendToAllOtherReplicas(preFull);
+  } else {
+    for (ReplicaId x : repsInfo->idsOfPeerReplicas()) {
+      sendRetransmittableMsgToReplica(preFull, x, seqNumber);
+    }
+  }
 
   ConcordAssert(seqNumInfo.isPrepared());
 
@@ -1640,7 +1655,13 @@ void ReplicaImp::onCommitCombinedSigSucceeded(SeqNum seqNumber,
     ps_->endWriteTran();
   }
 
-  for (ReplicaId x : repsInfo->idsOfPeerReplicas()) sendRetransmittableMsgToReplica(commitFull, x, seqNumber);
+  if (!retransmissionsLogicEnabled) {
+    sendToAllOtherReplicas(commitFull);
+  } else {
+    for (ReplicaId x : repsInfo->idsOfPeerReplicas()) {
+      sendRetransmittableMsgToReplica(commitFull, x, seqNumber);
+    }
+  }
 
   ConcordAssert(seqNumInfo.isCommitted__gg());
 
@@ -2884,16 +2905,6 @@ void ReplicaImp::onSeqNumIsStable(SeqNum newStableSeqNum, bool hasStateInformati
              "Informing control state manager that consensus should be stopped (with n-f/n replicas): " << KVLOG(
                  newStableSeqNum, metric_last_stable_seq_num_.Get().Get()));
     IControlHandler::instance()->onStableCheckpoint();
-
-    // Mark the metadata storage for deletion if we need to
-    auto seq_num_to_remove_metadata_storage = ControlStateManager::instance().getEraseMetadataFlag();
-    // We would want to set this flag only when we sure that the replica needs to remove the metadata.
-    if (seq_num_to_remove_metadata_storage.has_value() &&
-        seq_num_to_remove_metadata_storage.value() == newStableSeqNum) {
-      LOG_INFO(GL, "informing metadata storage to clean the data before shutting down (without n/n replicas)");
-      if (ps_) ps_->setEraseMetadataStorageFlag();
-      stateTransfer->setEraseMetadataFlag();
-    }
   }
 }
 
@@ -3261,9 +3272,14 @@ ReplicaImp::ReplicaImp(const LoadedReplicaData &ld,
                  timers,
                  pm,
                  sm) {
+  LOG_INFO(GL, "");
   ConcordAssertNE(persistentStorage, nullptr);
 
   ps_ = persistentStorage;
+  bftEngine::ControlStateManager::instance().setRemoveMetadataFunc([&]() {
+    ps_->setEraseMetadataStorageFlag();
+    stateTransfer->setEraseMetadataFlag();
+  });
 
   lastAgreedView = ld.viewsManager->latestActiveView();
 
@@ -3386,68 +3402,40 @@ ReplicaImp::ReplicaImp(const LoadedReplicaData &ld,
                                       config_.getreplicaId(),
                                       pp->digestOfRequests(),
                                       CryptoManager::instance().thresholdSignerForSlowPathCommit(pp->seqNumber()));
-        bool added = seqNumInfo.addSelfMsg(p, true);
-        if (!added) {
-          LOG_INFO(GL, "Failed to add sn [" << s << "] to main log, trying different crypto system");
-
-          p = PreparePartialMsg::create(curView,
-                                        pp->seqNumber(),
-                                        config_.getreplicaId(),
-                                        pp->digestOfRequests(),
-                                        CryptoManager::instance().thresholdSignerForSlowPathCommit(pp->seqNumber()));
-          added = seqNumInfo.addSelfMsg(p, true);
-        }
-        ConcordAssert(added);
+        ConcordAssert(seqNumInfo.addSelfMsg(p, true));
       }
 
       if (e.isPrepareFullMsgSet()) {
-        bool failedToAdd = false;
         try {
-          seqNumInfo.addMsg(e.getPrepareFullMsg(), true);
+          ConcordAssert(seqNumInfo.addMsg(e.getPrepareFullMsg(), true));
         } catch (const std::exception &e) {
-          failedToAdd = true;
-          LOG_INFO(GL, "Failed to add sn [" << s << "] to main log, trying different crypto system");
-          std::cout << e.what() << '\n';
+          LOG_ERROR(GL, "Failed to add sn " << s << " to main log, reason: " << e.what());
+          throw;
         }
-        if (failedToAdd) seqNumInfo.addMsg(e.getPrepareFullMsg(), true);
 
         Digest d;
         Digest::digestOfDigest(e.getPrePrepareMsg()->digestOfRequests(), d);
         CommitPartialMsg *c = CommitPartialMsg::create(
             curView, s, config_.getreplicaId(), d, CryptoManager::instance().thresholdSignerForSlowPathCommit(s));
 
-        bool added = seqNumInfo.addSelfCommitPartialMsgAndDigest(c, d, true);
-        if (!added) {
-          LOG_INFO(GL, "Failed to add sn [" << s << "] to main log, trying different crypto system");
-          c = CommitPartialMsg::create(
-              curView, s, config_.getreplicaId(), d, CryptoManager::instance().thresholdSignerForSlowPathCommit(s));
-          seqNumInfo.addSelfCommitPartialMsgAndDigest(c, d, true);
-        }
+        ConcordAssert(seqNumInfo.addSelfCommitPartialMsgAndDigest(c, d, true));
       }
 
       if (e.isCommitFullMsgSet()) {
-        bool failedToAdd = false;
         try {
-          seqNumInfo.addMsg(e.getCommitFullMsg(), true);
+          ConcordAssert(seqNumInfo.addMsg(e.getCommitFullMsg(), true));
         } catch (const std::exception &e) {
-          failedToAdd = true;
-          LOG_INFO(GL, "Failed to add sn [" << s << "] to main log, trying different crypto system");
-          std::cout << e.what() << '\n';
+          LOG_ERROR(GL, "Failed to add sn [" << s << "] to main log, reason: " << e.what());
+          throw;
         }
-        if (failedToAdd) seqNumInfo.addMsg(e.getCommitFullMsg(), true);
 
         ConcordAssert(e.getCommitFullMsg()->equals(*seqNumInfo.getValidCommitFullMsg()));
       }
 
       if (e.isFullCommitProofMsgSet()) {
         PartialProofsSet &pps = seqNumInfo.partialProofs();
-        bool added = pps.addMsg(e.getFullCommitProofMsg());  // TODO(GG): consider using a method that directly adds
+        ConcordAssert(pps.addMsg(e.getFullCommitProofMsg()));  // TODO(GG): consider using a method that directly adds
         // the message (as in the examples below)
-        if (!added) {
-          LOG_INFO(GL, "Failed to add sn [" << s << "] to main log, trying different crypto system");
-          added = pps.addMsg(e.getFullCommitProofMsg());
-        }
-        ConcordAssert(added);  // we should verify the relevant signature when it is loaded
         ConcordAssert(e.getFullCommitProofMsg()->equals(*pps.getFullProof()));
       }
 
@@ -3530,8 +3518,13 @@ ReplicaImp::ReplicaImp(const ReplicaConfig &config,
                  timers,
                  pm,
                  sm) {
+  LOG_INFO(GL, "");
   if (persistentStorage != nullptr) {
     ps_ = persistentStorage;
+    bftEngine::ControlStateManager::instance().setRemoveMetadataFunc([&]() {
+      ps_->setEraseMetadataStorageFlag();
+      stateTransfer->setEraseMetadataFlag();
+    });
   }
 
   auto numThreads = 8;
@@ -3642,6 +3635,7 @@ ReplicaImp::ReplicaImp(bool firstTime,
       reqBatchingLogic_(*this, config_, metrics_, timers),
       replStatusHandlers_(*this),
       rsaSigner_(std::make_unique<bftEngine::impl::RSASigner>(config.replicaPrivateKey.c_str())) {
+  LOG_INFO(GL, "");
   ConcordAssertLT(config_.getreplicaId(), config_.getnumReplicas());
   // TODO(GG): more asserts on params !!!!!!!!!!!
 
@@ -3677,11 +3671,6 @@ ReplicaImp::ReplicaImp(bool firstTime,
   clientsManager->initInternalClientInfo(config_.getnumReplicas());
   internalBFTClient_.reset(new InternalBFTClient(
       config_.getreplicaId(), clientsManager->getHighestIdOfNonInternalClient(), msgsCommunicator_));
-
-  ClientsManager::setNumResPages(
-      (config.numOfClientProxies + config.numOfExternalClients + config.numReplicas) *
-      ClientsManager::reservedPagesPerClient(config.getsizeOfReservedPage(), config.maxReplyMessageSize));
-  ClusterKeyStore::setNumResPages(config.numReplicas);
 
   // autoPrimaryRotationEnabled implies viewChangeProtocolEnabled
   // Note: "p=>q" is equivalent to "not p or q"
@@ -3720,6 +3709,11 @@ ReplicaImp::ReplicaImp(bool firstTime,
   if (currentViewIsActive()) {
     time_in_active_view_.start();
   }
+
+  KeyExchangeManager::InitData id{
+      internalBFTClient_, &CryptoManager::instance(), &CryptoManager::instance(), sm_, &timers_};
+
+  KeyExchangeManager::instance(&id);
 
   LOG_INFO(GL, "ReplicaConfig parameters: " << config);
 }
@@ -3793,17 +3787,8 @@ void ReplicaImp::addTimers() {
 void ReplicaImp::start() {
   LOG_INFO(GL, "Running ReplicaImp");
   sigManager_->SetAggregator(aggregator_);
+  KeyExchangeManager::instance().setAggregator(aggregator_);
   ReplicaForStateTransfer::start();
-
-  // Initialize and start KeyExchangeManager after State Transfer
-  KeyExchangeManager::InitData id{};
-  id.cl = internalBFTClient_;
-  id.reservedPages = stateTransfer.get();
-  id.kg = &CryptoManager::instance();
-  id.ke = &CryptoManager::instance();
-  id.secretsMgr = sm_;
-  id.timers = &timers_;
-  id.a = aggregator_;
 
   // If we have just unwedged, clear the wedge point
   auto seqNumToStopAt = ControlStateManager::instance().getCheckpointToStopAt();
@@ -3811,8 +3796,6 @@ void ReplicaImp::start() {
     LOG_INFO(GL, "unwedge the system" << KVLOG(lastStableSeqNum));
     ControlStateManager::instance().clearCheckpointToStopAt();
   }
-
-  KeyExchangeManager::start(&id);
 
   if (!firstTime_ || config_.getdebugPersistentStorageEnabled()) clientsManager->loadInfoFromReservedPages();
   addTimers();
@@ -3912,7 +3895,7 @@ void ReplicaImp::executeRequestsInPrePrepareMsg(concordUtils::SpanWrapper &paren
                                                 bool recoverFromErrorInRequestsExecution) {
   TimeRecorder scoped_timer(*histograms_.executeRequestsInPrePrepareMsg);
   auto span = concordUtils::startChildSpan("bft_execute_requests_in_preprepare", parent_span);
-  ConcordAssertAND(!isCollectingState(), currentViewIsActive());
+  if (!isCollectingState()) ConcordAssert(currentViewIsActive());
   ConcordAssertNE(ppMsg, nullptr);
   ConcordAssertEQ(ppMsg->viewNumber(), curView);
   ConcordAssertEQ(ppMsg->seqNumber(), lastExecutedSeqNum + 1);
@@ -3940,17 +3923,17 @@ void ReplicaImp::executeRequestsInPrePrepareMsg(concordUtils::SpanWrapper &paren
         SCOPED_MDC_CID(req.getCid());
         NodeIdType clientId = req.clientProxyId();
 
-        const bool validClient = isValidClient(clientId);
-        if (!validClient) {
-          ++numInvalidClients;
-        }
         const bool validNoop = ((clientId == currentPrimary()) && (req.requestLength() == 0));
         if (validNoop) {
           ++numValidNoOps;
+          reqIdx++;
           continue;
         }
+        const bool validClient = isValidClient(clientId);
         if (!validClient) {
-          LOG_WARN(GL, "The client is not valid. " << KVLOG(clientId));
+          ++numInvalidClients;
+          LOG_WARN(GL, "The client is not valid" << KVLOG(clientId));
+          reqIdx++;
           continue;
         }
         if (isReplyAlreadySentToClient(clientId, req.requestSeqNum())) {
@@ -3961,8 +3944,7 @@ void ReplicaImp::executeRequestsInPrePrepareMsg(concordUtils::SpanWrapper &paren
           reqIdx++;
           continue;
         }
-        requestSet.set(reqIdx);
-        reqIdx++;
+        requestSet.set(reqIdx++);
       }
       reqIter.restart();
 
@@ -4180,7 +4162,7 @@ void ReplicaImp::tryToRemovePendingRequestsForSeqNum(SeqNum seqNum) {
 void ReplicaImp::executeNextCommittedRequests(concordUtils::SpanWrapper &parent_span,
                                               SeqNum seqNumber,
                                               const bool requestMissingInfo) {
-  ConcordAssertAND(!isCollectingState(), currentViewIsActive());
+  if (!isCollectingState()) ConcordAssert(currentViewIsActive());
   ConcordAssertGE(lastExecutedSeqNum, lastStableSeqNum);
   auto span = concordUtils::startChildSpan("bft_execute_next_committed_requests", parent_span);
   consensus_times_.end(seqNumber);
@@ -4249,7 +4231,7 @@ void ReplicaImp::executeNextCommittedRequests(concordUtils::SpanWrapper &parent_
     internalBFTClient_->sendRequest(
         RECONFIG_FLAG, strMsg.size(), strMsg.c_str(), "wedge-noop-command-" + std::to_string(seqNumber));
     // Now, try to send a new prepreare immediately, without waiting to a new batch
-    if ((BatchingPolicy)config_.batchingPolicy == BATCH_SELF_ADJUSTED) tryToSendPrePrepareMsg(false);
+    tryToSendPrePrepareMsg(false);
   }
 
   if (ControlStateManager::instance().getCheckpointToStopAt().has_value() &&

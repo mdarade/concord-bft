@@ -17,6 +17,7 @@
 #include "Timers.hpp"
 #include "Metrics.hpp"
 #include "secrets_manager_impl.h"
+#include "SysConsts.hpp"
 
 namespace bftEngine::impl {
 
@@ -90,7 +91,7 @@ class KeyExchangeManager {
 
     PrivateKeys(std::shared_ptr<concord::secretsmanager::ISecretsManagerImpl> secretsMgr)
         : secretsMgr_{secretsMgr},
-          secrets_file_{ReplicaConfig::instance().getkeyViewFilePath() + std::string("/gen-sec.") +
+          secrets_file_{ReplicaConfig::instance().getkeyViewFilePath() + std::string("/" + secFilePrefix + ".") +
                         std::to_string(ReplicaConfig::instance().getreplicaId())} {
       load();
     }
@@ -131,22 +132,19 @@ class KeyExchangeManager {
 
   struct InitData {
     std::shared_ptr<IInternalBFTClient> cl;
-    IReservedPages* reservedPages{nullptr};
     IMultiSigKeyGenerator* kg{nullptr};
     IKeyExchanger* ke{nullptr};
     std::shared_ptr<concord::secretsmanager::ISecretsManagerImpl> secretsMgr;
     concordUtil::Timers* timers{nullptr};
-    std::shared_ptr<concordMetrics::Aggregator> a;
   };
+
+  void setAggregator(std::shared_ptr<concordMetrics::Aggregator> a) {
+    initMetrics(a, std::chrono::seconds(ReplicaConfig::instance().getmetricsDumpIntervalSeconds()));
+  }
 
   static KeyExchangeManager& instance(InitData* id = nullptr) {
     static KeyExchangeManager km{id};
     return km;
-  }
-
-  static void start(InitData* id) {
-    instance(id);
-    instance().initMetrics(id->a, std::chrono::seconds(ReplicaConfig::instance().getmetricsDumpIntervalSeconds()));
   }
 
  private:  // methods

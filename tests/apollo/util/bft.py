@@ -132,7 +132,7 @@ def with_constant_load(async_fn):
                 nursery.cancel_scope.cancel()
     return wrapper
 
-def with_bft_network(start_replica_cmd, selected_configs=None, num_clients=None, num_ro_replicas=0, rotate_keys=False):
+def with_bft_network(start_replica_cmd, selected_configs=None, num_clients=None, num_ro_replicas=0, rotate_keys=False, bft_configs=None):
     """
     Runs the decorated async function for all selected BFT configs
     start_replica_cmd is a callback which is used to start a replica. It should have the following
@@ -153,7 +153,8 @@ def with_bft_network(start_replica_cmd, selected_configs=None, num_clients=None,
                 with log.start_task(action_type=async_fn.__name__):
                     await async_fn(*args, **kwargs, bft_network=bft_network)
             else:
-                for bft_config in interesting_configs(selected_configs):
+                configs = bft_configs if bft_configs is not None else interesting_configs(selected_configs)
+                for bft_config in configs:
 
                     config = TestConfig(n=bft_config['n'],
                                         f=bft_config['f'],
@@ -1245,7 +1246,7 @@ class BftTestNetwork:
             
         return await self.wait_for(the_number_of_slow_path_requests, 5, .5)
         
-    async def check_initital_key_exchange(self):
+    async def check_initital_key_exchange(self, stop_replicas=True):
         """
         Performs initial key exchange, starts all replicas, validate the exchange and stops all replicas.
         The stop is done in order for a test who uses this functionality, to proceed without imposing n up replicas.
@@ -1279,7 +1280,8 @@ class BftTestNetwork:
             with trio.fail_after(seconds=5):
                 lastExecutedKey = ['replica', 'Gauges', 'lastExecutedSeqNum']
                 lastExecutedVal = await self.metrics.get(0, *lastExecutedKey)
-            self.stop_all_replicas()
+            if stop_replicas:
+                self.stop_all_replicas()
             return lastExecutedVal
 
     async def assert_successful_pre_executions_count(self, replica_id, num_requests):

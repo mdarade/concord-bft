@@ -33,6 +33,7 @@ ReplicaBase::ReplicaBase(const ReplicaConfig& config,
       metrics_dump_interval_in_sec_(config_.metricsDumpIntervalSeconds),
       metrics_{concordMetrics::Component("replica", std::make_shared<concordMetrics::Aggregator>())},
       timers_{timers} {
+  LOG_INFO(GL, "");
   if (config_.debugStatisticsEnabled) DebugStatistics::initDebugStatisticsData();
 }
 
@@ -65,6 +66,22 @@ void ReplicaBase::stop() {
 }
 
 bool ReplicaBase::isRunning() const { return msgsCommunicator_->isMsgsProcessingRunning(); }
+
+void ReplicaBase::sendToAllOtherReplicas(MessageBase* m, bool includeRo) {
+  MsgCode::Type type = static_cast<MsgCode::Type>(m->type());
+  LOG_DEBUG(MSGS, "Sending msg type: " << type << " to all replicas.");
+
+  const auto& ids = repsInfo->idsOfPeerReplicas();
+  std::set<bft::communication::NodeNum> replicas;
+  std::transform(ids.begin(),
+                 ids.end(),
+                 std::inserter(replicas, replicas.begin()),
+                 [](ReplicaId id) -> bft::communication::NodeNum { return id; });
+  if (includeRo) {
+    replicas.insert(repsInfo->idsOfPeerROReplicas().begin(), repsInfo->idsOfPeerROReplicas().end());
+  }
+  msgsCommunicator_->send(replicas, m->body(), m->size());
+}
 
 void ReplicaBase::sendRaw(MessageBase* m, NodeIdType dest) {
   if (config_.debugStatisticsEnabled) DebugStatistics::onSendExMessage(m->type());

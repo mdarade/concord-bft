@@ -175,7 +175,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterGauge("next_required_block_", nextRequiredBlock_),
                metrics_component_.RegisterGauge("num_pending_item_data_msgs_", pendingItemDataMsgs.size()),
                metrics_component_.RegisterGauge("total_size_of_pending_item_data_msgs", totalSizeOfPendingItemDataMsgs),
-               metrics_component_.RegisterGauge("last_block_", 0),
+               metrics_component_.RegisterAtomicGauge("last_block_", 0),
                metrics_component_.RegisterGauge("last_reachable_block", 0),
 
                metrics_component_.RegisterCounter("sent_ask_for_checkpoint_summaries_msg"),
@@ -206,22 +206,22 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterCounter("invalid_item_data_msg"),
                metrics_component_.RegisterCounter("irrelevant_item_data_msg"),
 
-               metrics_component_.RegisterCounter("create_checkpoint"),
+               metrics_component_.RegisterAtomicCounter("create_checkpoint"),
                metrics_component_.RegisterCounter("mark_checkpoint_as_stable"),
                metrics_component_.RegisterCounter("load_reserved_page"),
                metrics_component_.RegisterCounter("load_reserved_page_from_pending"),
-               metrics_component_.RegisterCounter("load_reserved_page_from_checkpoint"),
-               metrics_component_.RegisterCounter("save_reserved_page"),
+               metrics_component_.RegisterAtomicCounter("load_reserved_page_from_checkpoint"),
+               metrics_component_.RegisterAtomicCounter("save_reserved_page"),
                metrics_component_.RegisterCounter("zero_reserved_page"),
                metrics_component_.RegisterCounter("start_collecting_state"),
                metrics_component_.RegisterCounter("on_timer"),
-               metrics_component_.RegisterCounter("handle_state_transfer_message_"),
-               metrics_component_.RegisterCounter("handle_AskForCheckpointSummaries_message"),
-               metrics_component_.RegisterCounter("handle_CheckpointsSummary_message"),
-               metrics_component_.RegisterCounter("handle_FetchBlocks_message"),
-               metrics_component_.RegisterCounter("handle_FetchResPages_message"),
-               metrics_component_.RegisterCounter("handle_RejectFetching_message"),
-               metrics_component_.RegisterCounter("handle_ItemData_message"),
+               metrics_component_.RegisterCounter("handle_state_transfer_msg"),
+               metrics_component_.RegisterCounter("handle_AskForCheckpointSummaries_msg"),
+               metrics_component_.RegisterCounter("handle_CheckpointsSummary_msg"),
+               metrics_component_.RegisterCounter("handle_FetchBlocks_msg"),
+               metrics_component_.RegisterCounter("handle_FetchResPages_msg"),
+               metrics_component_.RegisterCounter("handle_RejectFetching_msg"),
+               metrics_component_.RegisterCounter("handle_ItemData_msg"),
                metrics_component_.RegisterCounter("transferring_complete"),
 
                metrics_component_.RegisterGauge("overall_blocks_collected", 0),
@@ -256,13 +256,11 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
     messageHandler_ = std::bind(&BCStateTran::handleStateTransferMessageImp, this, _1, _2, _3);
     timerHandler_ = std::bind(&BCStateTran::onTimerImp, this);
   }
-
   // Make sure that the internal IReplicaForStateTransfer callback is always added, alongside any user-supplied
   // callbacks.
-  on_transferring_complete_cb_registry_.add(
+  addOnTransferringCompleteCallback(
       [this](uint64_t checkpoint_num) { replicaForStateTransfer_->onTransferringComplete(checkpoint_num); });
 }
-
 BCStateTran::~BCStateTran() {
   ConcordAssert(!running_);
   ConcordAssert(cacheOfVirtualBlockForResPages.empty());
@@ -630,6 +628,7 @@ void BCStateTran::startCollectingStats() {
   metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
 
   fetch_block_msg_latency_rec_.clear();
+  memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
 }
 
 void BCStateTran::startCollectingState() {
@@ -693,7 +692,7 @@ std::string BCStateTran::getStatus() {
     nested_data.insert(toPair(std::to_string(id), seq_num));
   }
 
-  result.insert(toPair("LastMsgSequenceNumbers(ReplicaID:SeqNum)",
+  result.insert(toPair("lastMsgSequenceNumbers(ReplicaID:SeqNum)",
                        concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
   nested_data.clear();
 
@@ -707,24 +706,28 @@ std::string BCStateTran::getStatus() {
   nested_data.clear();
 
   if (isFetching()) {
-    nested_data.insert(STRPAIR(current_source));
-    nested_data.insert(STRPAIR(preferred_replicas));
-    nested_data.insert(STRPAIR(nextRequiredBlock_));
+    nested_data.insert(toPair("currentSource", current_source));
+    nested_data.insert(toPair("preferredReplicas", preferred_replicas));
+    nested_data.insert(toPair("nextRequiredBlock", nextRequiredBlock_));
     nested_data.insert(STRPAIR(totalSizeOfPendingItemDataMsgs));
-    result.insert(toPair("FetchingStateDetails",
+    result.insert(toPair("fetchingStateDetails",
                          concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
 
-    result.insert(toPair("CollectingDetails", logsForCollectingStatus(psd_->getFirstRequiredBlock())));
+    result.insert(toPair("collectingDetails", logsForCollectingStatus(psd_->getFirstRequiredBlock())));
   }
 
-  result.insert(toPair("GeneralStateTransferMetrics", metrics_component_.ToJson()));
+  result.insert(toPair("generalStateTransferMetrics", metrics_component_.ToJson()));
 
   oss << concordUtils::kContainerToJson(result);
   return oss.str();
 }
 
-void BCStateTran::addOnTransferringCompleteCallback(std::function<void(uint64_t)> callback) {
-  on_transferring_complete_cb_registry_.add(std::move(callback));
+void BCStateTran::addOnTransferringCompleteCallback(std::function<void(uint64_t)> callback,
+                                                    StateTransferCallBacksPriorities priority) {
+  if (on_transferring_complete_cb_registry_.find((uint64_t)priority) == on_transferring_complete_cb_registry_.end()) {
+    on_transferring_complete_cb_registry_[(uint64_t)priority];  // Create a new callback registry for this priority
+  }
+  on_transferring_complete_cb_registry_.at(uint64_t(priority)).add(std::move(callback));
 }
 
 // this function can be executed in context of another thread.
@@ -739,8 +742,9 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     replicaForStateTransfer_->freeStateTransferMsg(msg);
     return;
   }
-  TimeRecorder scoped_timer(*histograms_.handle_state_transfer_message);
-  metrics_.handle_state_transfer_message_.Get().Inc();
+  bool msg_processed = false;
+  auto start = std::chrono::steady_clock::now();
+  metrics_.handle_state_transfer_msg_.Get().Inc();
 
   BCStateTranBaseMsg *msgHeader = reinterpret_cast<BCStateTranBaseMsg *>(msg);
   LOG_DEBUG(getLogger(), "new message with type=" << msgHeader->type);
@@ -750,50 +754,61 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
   switch (msgHeader->type) {
     case MsgType::AskForCheckpointSummaries:
       if (fs == FetchingState::NotFetching) {
-        TimeRecorder scoped_timer(*histograms_.handle_AskForCheckpointSummaries_message);
-        metrics_.handle_AskForCheckpointSummaries_message_.Get().Inc();
+        TimeRecorder scoped_timer(*histograms_.handle_AskForCheckpointSummaries_msg);
+        metrics_.handle_AskForCheckpointSummaries_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<AskForCheckpointSummariesMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
       }
       break;
     case MsgType::CheckpointsSummary:
       if (fs == FetchingState::GettingCheckpointSummaries) {
-        TimeRecorder scoped_timer(*histograms_.handle_CheckpointsSummary_message);
-        metrics_.handle_CheckpointsSummary_message_.Get().Inc();
+        TimeRecorder scoped_timer(*histograms_.handle_CheckpointsSummary_msg);
+        metrics_.handle_CheckpointsSummary_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<CheckpointSummaryMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
       }
       break;
     case MsgType::FetchBlocks:
       {
-        TimeRecorder scoped_timer(*histograms_.handle_FetchBlocks_message);
-        metrics_.handle_FetchBlocks_message_.Get().Inc();
+        TimeRecorder scoped_timer(*histograms_.handle_FetchBlocks_msg);
+        metrics_.handle_FetchBlocks_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<FetchBlocksMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
       }
       break;
     case MsgType::FetchResPages:
       {
-        TimeRecorder scoped_timer(*histograms_.handle_FetchResPages_message);
-        metrics_.handle_FetchResPages_message_.Get().Inc();
+        TimeRecorder scoped_timer(*histograms_.handle_FetchResPages_msg);
+        metrics_.handle_FetchResPages_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<FetchResPagesMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
       }
       break;
     case MsgType::RejectFetching:
       if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
-        TimeRecorder scoped_timer(*histograms_.handle_RejectFetching_message);
-        metrics_.handle_RejectFetching_message_.Get().Inc();
+        TimeRecorder scoped_timer(*histograms_.handle_RejectFetching_msg);
+        metrics_.handle_RejectFetching_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<RejectFetchingMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
       }
       break;
     case MsgType::ItemData:
       if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
-        TimeRecorder scoped_timer(*histograms_.handle_ItemData_message);
-        metrics_.handle_ItemData_message_.Get().Inc();
+        TimeRecorder scoped_timer(*histograms_.handle_ItemData_msg);
+        metrics_.handle_ItemData_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<ItemDataMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
       }
       break;
     default:
       break;
   }
 
+  if (msg_processed) {
+    uint64_t interval = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+    total_processing_time_microsec_[msgHeader->type] += interval;
+    histograms_.handle_state_transfer_msg->record(interval);
+  }
   if (!noDelete) replicaForStateTransfer_->freeStateTransferMsg(msg);
 }
 
@@ -2086,18 +2101,18 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
   auto bytes_overall_r = bytes_collected_.getOverallResults();
 
   nested_data.insert(toPair(
-      "CollectRange", std::to_string(firstRequiredBlock) + ", " + std::to_string(first_collected_block_num_.value())));
-  nested_data.insert(toPair("LastCollectedBlock", nextRequiredBlock_));
-  nested_data.insert(toPair("BlocksLeft", (nextRequiredBlock_ - firstRequiredBlock)));
-  nested_data.insert(toPair("ElapsedTime", std::to_string(blocks_overall_r.elapsed_time_ms_) + " ms"));
-  nested_data.insert(toPair("Collected",
+      "collectRange", std::to_string(firstRequiredBlock) + ", " + std::to_string(first_collected_block_num_.value())));
+  nested_data.insert(toPair("lastCollectedBlock", nextRequiredBlock_));
+  nested_data.insert(toPair("blocksLeft", (nextRequiredBlock_ - firstRequiredBlock)));
+  nested_data.insert(toPair("elapsedTime", std::to_string(blocks_overall_r.elapsed_time_ms_) + " ms"));
+  nested_data.insert(toPair("collected",
                             std::to_string(blocks_overall_r.num_processed_items_) + " blk & " +
                                 std::to_string(bytes_overall_r.num_processed_items_) + " B"));
-  nested_data.insert(toPair("Thoughput",
+  nested_data.insert(toPair("thoughput",
                             std::to_string(blocks_overall_r.throughput_) + " blk/s & " +
                                 std::to_string(bytes_overall_r.throughput_) + " B/s"));
   result.insert(
-      toPair("OverallStats", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
+      toPair("overallStats", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
   nested_data.clear();
 
   if (get_missing_blocks_summary_window_size > 0) {
@@ -2105,26 +2120,26 @@ std::string BCStateTran::logsForCollectingStatus(const uint64_t firstRequiredBlo
     auto bytes_win_r = bytes_collected_.getPrevWinResults();
     auto prev_win_index = blocks_collected_.getPrevWinIndex();
 
-    nested_data.insert(toPair("Index", prev_win_index));
-    nested_data.insert(toPair("ElapsedTime", std::to_string(blocks_win_r.elapsed_time_ms_) + " ms"));
-    nested_data.insert(toPair("Collected",
+    nested_data.insert(toPair("index", prev_win_index));
+    nested_data.insert(toPair("elapsedTime", std::to_string(blocks_win_r.elapsed_time_ms_) + " ms"));
+    nested_data.insert(toPair("collected",
                               std::to_string(blocks_win_r.num_processed_items_) + " blk & " +
                                   std::to_string(bytes_win_r.num_processed_items_) + " B"));
     nested_data.insert(toPair(
-        "Thoughput",
+        "thoughput",
         std::to_string(blocks_win_r.throughput_) + " blk/s & " + std::to_string(bytes_win_r.throughput_) + " B/s"));
     result.insert(
-        toPair("LastWindow", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
+        toPair("lastWindow", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
     nested_data.clear();
   }
 
-  nested_data.insert(toPair("LastStored", psd_->getLastStoredCheckpoint()));
+  nested_data.insert(toPair("lastStored", psd_->getLastStoredCheckpoint()));
   nested_nested_data.insert(toPair("checkpointNum", fetched_cp.checkpointNum));
   nested_nested_data.insert(toPair("lastBlock", fetched_cp.lastBlock));
   nested_data.insert(
-      toPair("BeingFetched", concordUtils::kvContainerToJson(nested_nested_data, [](const auto &arg) { return arg; })));
+      toPair("beingFetched", concordUtils::kvContainerToJson(nested_nested_data, [](const auto &arg) { return arg; })));
   result.insert(
-      toPair("CheckpointInfo", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
+      toPair("checkpointInfo", concordUtils::kvContainerToJson(nested_data, [](const auto &arg) { return arg; })));
 
   oss << concordUtils::kContainerToJson(result);
   return oss.str().c_str();
@@ -2337,7 +2352,10 @@ void BCStateTran::processData() {
       LOG_INFO(getLogger(),
                "Invoking onTransferringComplete callbacks for checkpoint number: " << KVLOG(cp.checkpointNum));
       metrics_.on_transferring_complete_.Get().Inc();
-      on_transferring_complete_cb_registry_.invokeAll(cp.checkpointNum);
+      std::set<uint64_t> cb_keys;
+      for (const auto &kv : on_transferring_complete_cb_registry_) {
+        kv.second.invokeAll(cp.checkpointNum);
+      }
       g.txn()->setIsFetchingState(false);
       break;
     }

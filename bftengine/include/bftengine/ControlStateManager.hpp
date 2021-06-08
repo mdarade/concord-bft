@@ -41,12 +41,9 @@ class ControlStatePage : public concord::serialize::SerializableFactory<ControlS
   }
 };
 
-static constexpr uint32_t ControlHandlerStateManagerReservedPagesIndex = 1;
 static constexpr uint32_t ControlHandlerStateManagerNumOfReservedPages = 1;
 
-class ControlStateManager : public ResPagesClient<ControlStateManager,
-                                                  ControlHandlerStateManagerReservedPagesIndex,
-                                                  ControlHandlerStateManagerNumOfReservedPages> {
+class ControlStateManager : public ResPagesClient<ControlStateManager, ControlHandlerStateManagerNumOfReservedPages> {
  public:
   static ControlStateManager& instance() {
     static ControlStateManager instance_;
@@ -59,12 +56,15 @@ class ControlStateManager : public ResPagesClient<ControlStateManager,
   void setEraseMetadataFlag(int64_t currentSeqNum);
   std::optional<int64_t> getEraseMetadataFlag();
 
+  void markRemoveMetadata() { remove_metadata_(); }
   void clearCheckpointToStopAt();
   void setPruningProcess(bool onPruningProcess) { onPruningProcess_ = onPruningProcess; }
   bool getPruningProcessStatus() const { return onPruningProcess_; }
 
   void disable() { enabled_ = false; }
   void enable() { enabled_ = true; }
+
+  void setRemoveMetadataFunc(std::function<void()> fn) { remove_metadata_ = fn; }
 
  private:
   ControlStateManager() { scratchPage_.resize(sizeOfReservedPage()); }
@@ -75,5 +75,6 @@ class ControlStateManager : public ResPagesClient<ControlStateManager,
   bool enabled_ = true;
   ControlStatePage page_;
   std::atomic_bool onPruningProcess_ = false;
+  std::function<void()> remove_metadata_;
 };
 }  // namespace bftEngine
