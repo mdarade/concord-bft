@@ -47,7 +47,7 @@ using std::chrono::milliseconds;
 using std::chrono::time_point;
 using std::chrono::system_clock;
 using namespace std::placeholders;
-
+using namespace concord::diagnostics;
 namespace bftEngine {
 namespace bcst {
 
@@ -215,7 +215,14 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
                metrics_component_.RegisterCounter("zero_reserved_page"),
                metrics_component_.RegisterCounter("start_collecting_state"),
                metrics_component_.RegisterCounter("on_timer"),
-               metrics_component_.RegisterCounter("on_transferring_complete"),
+               metrics_component_.RegisterCounter("handle_state_transfer_msg"),
+               metrics_component_.RegisterCounter("handle_AskForCheckpointSummaries_msg"),
+               metrics_component_.RegisterCounter("handle_CheckpointsSummary_msg"),
+               metrics_component_.RegisterCounter("handle_FetchBlocks_msg"),
+               metrics_component_.RegisterCounter("handle_FetchResPages_msg"),
+               metrics_component_.RegisterCounter("handle_RejectFetching_msg"),
+               metrics_component_.RegisterCounter("handle_ItemData_msg"),
+               metrics_component_.RegisterCounter("transferring_complete"),
 
                metrics_component_.RegisterGauge("overall_blocks_collected", 0),
                metrics_component_.RegisterGauge("overall_blocks_throughtput", 0),
@@ -228,7 +235,8 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
-      fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency) {
+      fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency),
+      src_send_batch_duration_rec_(histograms_.src_send_batch_duration) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
   ConcordAssert(replicas_.count(config_.myReplicaId) == 1 || config.isReadOnly);
@@ -620,6 +628,7 @@ void BCStateTran::startCollectingStats() {
   metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
 
   fetch_block_msg_latency_rec_.clear();
+  memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
 }
 
 void BCStateTran::startCollectingState() {
@@ -642,7 +651,7 @@ void BCStateTran::startCollectingState() {
 // this function can be executed in context of another thread.
 void BCStateTran::onTimerImp() {
   if (!running_) return;
-  concord::diagnostics::TimeRecorder scoped_timer(*histograms_.on_timer);
+  TimeRecorder scoped_timer(*histograms_.on_timer);
 
   metrics_.on_timer_.Get().Inc();
   // Send all metrics to the aggregator
@@ -733,6 +742,9 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
     replicaForStateTransfer_->freeStateTransferMsg(msg);
     return;
   }
+  bool msg_processed = false;
+  auto start = std::chrono::steady_clock::now();
+  metrics_.handle_state_transfer_msg_.Get().Inc();
 
   BCStateTranBaseMsg *msgHeader = reinterpret_cast<BCStateTranBaseMsg *>(msg);
   LOG_DEBUG(getLogger(), "new message with type=" << msgHeader->type);
@@ -741,31 +753,62 @@ void BCStateTran::handleStateTransferMessageImp(char *msg, uint32_t msgLen, uint
   bool noDelete = false;
   switch (msgHeader->type) {
     case MsgType::AskForCheckpointSummaries:
-      if (fs == FetchingState::NotFetching)
+      if (fs == FetchingState::NotFetching) {
+        TimeRecorder scoped_timer(*histograms_.handle_AskForCheckpointSummaries_msg);
+        metrics_.handle_AskForCheckpointSummaries_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<AskForCheckpointSummariesMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
+      }
       break;
     case MsgType::CheckpointsSummary:
-      if (fs == FetchingState::GettingCheckpointSummaries)
+      if (fs == FetchingState::GettingCheckpointSummaries) {
+        TimeRecorder scoped_timer(*histograms_.handle_CheckpointsSummary_msg);
+        metrics_.handle_CheckpointsSummary_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<CheckpointSummaryMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
+      }
       break;
     case MsgType::FetchBlocks:
-      noDelete = onMessage(reinterpret_cast<FetchBlocksMsg *>(msg), msgLen, senderId);
+      {
+        TimeRecorder scoped_timer(*histograms_.handle_FetchBlocks_msg);
+        metrics_.handle_FetchBlocks_msg_.Get().Inc();
+        noDelete = onMessage(reinterpret_cast<FetchBlocksMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
+      }
       break;
     case MsgType::FetchResPages:
-      noDelete = onMessage(reinterpret_cast<FetchResPagesMsg *>(msg), msgLen, senderId);
+      {
+        TimeRecorder scoped_timer(*histograms_.handle_FetchResPages_msg);
+        metrics_.handle_FetchResPages_msg_.Get().Inc();
+        noDelete = onMessage(reinterpret_cast<FetchResPagesMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
+      }
       break;
     case MsgType::RejectFetching:
-      if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages)
+      if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
+        TimeRecorder scoped_timer(*histograms_.handle_RejectFetching_msg);
+        metrics_.handle_RejectFetching_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<RejectFetchingMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
+      }
       break;
     case MsgType::ItemData:
-      if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages)
+      if (fs == FetchingState::GettingMissingBlocks || fs == FetchingState::GettingMissingResPages) {
+        TimeRecorder scoped_timer(*histograms_.handle_ItemData_msg);
+        metrics_.handle_ItemData_msg_.Get().Inc();
         noDelete = onMessage(reinterpret_cast<ItemDataMsg *>(msg), msgLen, senderId);
+        msg_processed = true;
+      }
       break;
     default:
       break;
   }
 
+  if (msg_processed) {
+    uint64_t interval = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+    total_processing_time_microsec_[msgHeader->type] += interval;
+    histograms_.handle_state_transfer_msg->record(interval);
+  }
   if (!noDelete) replicaForStateTransfer_->freeStateTransferMsg(msg);
 }
 
@@ -1228,6 +1271,18 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
   return true;
 }
 
+void BCStateTran::getBlock(uint64_t blockId, char *outBlock, uint32_t *outBlockSize) {
+  bool tmp;
+  *outBlockSize = 0;
+  {
+    TimeRecorder scoped_timer(*histograms_.src_get_block_duration);
+    tmp = as_->getBlock(blockId, outBlock, outBlockSize);
+  }
+  ConcordAssert(tmp);
+  ConcordAssertGT(*outBlockSize, 0);
+  histograms_.src_get_block_size_bytes->record(*outBlockSize);
+}
+
 bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t replicaId) {
   SCOPED_MDC_SEQ_NUM(getSequenceNumber(replicaId, m->msgSeqNum));
   LOG_DEBUG(getLogger(), "");
@@ -1267,12 +1322,18 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     return false;
   }
 
+  // start recording time to send a whole batch, and its size
+  uint64_t batch_size_bytes = 0;
+  uint64_t batch_size_blocks = 0;
+  src_send_batch_duration_rec_.clear();
+  src_send_batch_duration_rec_.start();
+
   // compute information about next block and chunk
   uint64_t nextBlock = m->lastRequiredBlock;
   uint32_t sizeOfNextBlock = 0;
-  bool tmp = as_->getBlock(nextBlock, buffer_, &sizeOfNextBlock);
-  ConcordAssert(tmp);
-  ConcordAssertGT(sizeOfNextBlock, 0);
+  getBlock(nextBlock, buffer_, &sizeOfNextBlock);
+  batch_size_bytes += sizeOfNextBlock;
+  ++batch_size_blocks;
 
   uint32_t sizeOfLastChunk = config_.maxChunkSize;
   uint32_t numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
@@ -1340,10 +1401,9 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
     } else {
       nextBlock--;
       LOG_DEBUG(getLogger(), "Start sending next block: " << KVLOG(nextBlock));
-      sizeOfNextBlock = 0;
-      bool tmp2 = as_->getBlock(nextBlock, buffer_, &sizeOfNextBlock);
-      ConcordAssert(tmp2);
-      ConcordAssertGT(sizeOfNextBlock, 0);
+      getBlock(nextBlock, buffer_, &sizeOfNextBlock);
+      batch_size_bytes += sizeOfNextBlock;
+      ++batch_size_blocks;
 
       sizeOfLastChunk = config_.maxChunkSize;
       numOfChunksInNextBlock = sizeOfNextBlock / config_.maxChunkSize;
@@ -1353,7 +1413,10 @@ bool BCStateTran::onMessage(const FetchBlocksMsg *m, uint32_t msgLen, uint16_t r
       }
       nextChunk = 1;
     }
-  }
+  }  // while
+  histograms_.src_send_batch_size_bytes->record(batch_size_bytes);
+  histograms_.src_send_batch_size_blocks->record(batch_size_blocks);
+  src_send_batch_duration_rec_.end();
   return false;
 }
 
