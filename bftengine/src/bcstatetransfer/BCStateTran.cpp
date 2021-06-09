@@ -2292,6 +2292,7 @@ void BCStateTran::processData() {
         }
       };
       future = pool_.async(task);
+      future.get();
 
       nextRequiredBlock_--;
       g.txn()->setLastRequiredBlock(nextRequiredBlock_);
@@ -2301,7 +2302,7 @@ void BCStateTran::processData() {
         ConcordAssertEQ(psd_->getLastRequiredBlock(), nextRequiredBlock_);
         LOG_DEBUG(getLogger(), "Sending FetchBlocksMsg: lastInBatch is true");
         sendFetchBlocksMsg(psd_->getFirstRequiredBlock(), nextRequiredBlock_, 0);
-        future.get();
+        // future.get();
         break;
       }
 
@@ -2311,7 +2312,7 @@ void BCStateTran::processData() {
         g.txn()->setLastRequiredBlock(0);
         clearAllPendingItemsData();
         nextRequiredBlock_ = 0;
-        future.get();
+        // future.get();
         digestOfNextRequiredBlock.makeZero();
 
         ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingResPages);

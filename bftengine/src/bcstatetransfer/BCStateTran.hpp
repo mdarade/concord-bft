@@ -52,7 +52,6 @@ using concordMetrics::AtomicCounterHandle;
 using concord::util::Throughput;
 using concord::diagnostics::Recorder;
 using concord::diagnostics::AsyncTimeRecorder;
-// using namespace concord::util;
 
 namespace bftEngine::bcst::impl {
 
