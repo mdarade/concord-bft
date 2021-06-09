@@ -48,6 +48,8 @@ using std::chrono::time_point;
 using std::chrono::system_clock;
 using namespace std::placeholders;
 using namespace concord::diagnostics;
+using namespace concord::util;
+
 namespace bftEngine {
 namespace bcst {
 
@@ -235,7 +237,7 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       blocks_collected_(get_missing_blocks_summary_window_size),
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
-      fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_latency),
+      fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_rtt_latency),
       src_send_batch_duration_rec_(histograms_.src_send_batch_duration) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
@@ -1013,6 +1015,7 @@ void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
                                      uint64_t lastRequiredBlock,
                                      int16_t lastKnownChunkInLastRequiredBlock) {
   ConcordAssert(sourceSelector_.hasSource());
+  TimeRecorder scoped_timer(*histograms_.dest_send_fetch_block_duration);
   metrics_.sent_fetch_blocks_msg_.Get().Inc();
 
   FetchBlocksMsg msg;
@@ -1879,6 +1882,7 @@ bool BCStateTran::getNextFullBlock(uint64_t requiredBlock,
                                    bool &outLastInBatch) {
   ConcordAssertGE(requiredBlock, 1);
 
+  TimeRecorder scoped_timer(*histograms_.dest_block_from_chunks_duration);
   const uint32_t maxSize = (isVBLock ? maxVBlockSize_ : config_.maxBlockSize);
   clearPendingItemsData(requiredBlock + 1);
 
@@ -2160,6 +2164,7 @@ void BCStateTran::processData() {
 
   const uint64_t currTime = getMonotonicTimeMilli();
   bool badDataFromCurrentSourceReplica = false;
+  // std::vector<std::future<int>> threads;
 
   while (true) {
     //////////////////////////////////////////////////////////////////////////
@@ -2169,6 +2174,7 @@ void BCStateTran::processData() {
     bool newSourceReplica = sourceSelector_.shouldReplaceSource(currTime, badDataFromCurrentSourceReplica);
 
     if (newSourceReplica) {
+      TimeRecorder scoped_timer(*histograms_.source_replica_selection_duration);
       sourceSelector_.removeCurrentReplica();
       if (fs == FetchingState::GettingMissingResPages && sourceSelector_.noPreferredReplicas()) {
         EnterGettingCheckpointSummariesState();
@@ -2190,6 +2196,7 @@ void BCStateTran::processData() {
     // if needed, determine the next required block
     //////////////////////////////////////////////////////////////////////////
     if (nextRequiredBlock_ == 0) {
+      TimeRecorder scoped_timer(*histograms_.dest_find_next_reqd_block_duration);
       ConcordAssert(digestOfNextRequiredBlock.isZero());
 
       DataStore::CheckpointDesc cp = psd_->getCheckpointBeingFetched();
@@ -2235,6 +2242,7 @@ void BCStateTran::processData() {
     bool newBlockIsValid = false;
 
     if (newBlock && isGettingBlocks) {
+      TimeRecorder scoped_timer(*histograms_.dest_digest_calc_duration);
       ConcordAssert(!badDataFromCurrentSourceReplica);
       newBlockIsValid = checkBlock(nextRequiredBlock_, digestOfNextRequiredBlock, buffer_, actualBlockSize);
       badDataFromCurrentSourceReplica = !newBlockIsValid;
@@ -2267,31 +2275,46 @@ void BCStateTran::processData() {
                 "Add block: " << std::boolalpha << "lastBlock=" << lastBlock
                               << KVLOG(nextRequiredBlock_, actualBlockSize) << std::noboolalpha);
 
-      ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+      // future = pool_.async([&]() { as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize); });
+      std::future<void> future;
 
-      reportCollectingStatus(firstRequiredBlock, actualBlockSize);
-      if (!lastBlock) {
-        as_->getPrevDigestFromBlock(nextRequiredBlock_,
-                                    reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
-        nextRequiredBlock_--;
-        g.txn()->setLastRequiredBlock(nextRequiredBlock_);
-        if (lastInBatch) {
-          //  last block in batch - send another FetchBlocksMsg since we havn't reach yet to firstRequiredBlock
-          ConcordAssertEQ(psd_->getLastRequiredBlock(), nextRequiredBlock_);
-          LOG_DEBUG(getLogger(), "Sending FetchBlocksMsg: lastInBatch is true");
-          sendFetchBlocksMsg(psd_->getFirstRequiredBlock(), nextRequiredBlock_, 0);
-          break;
+      auto nextRequiredBlock = nextRequiredBlock_;
+      auto task = [&]() mutable {
+        {
+          TimeRecorder scoped_timer(*histograms_.dest_put_block_duration);
+          future = pool_.async([&]() { as_->putBlock(nextRequiredBlock, buffer_, actualBlockSize); });
         }
-      } else {
+        reportCollectingStatus(firstRequiredBlock, actualBlockSize);
+        if (!lastBlock) {
+          LOG_DEBUG(getLogger(), "mdarade Getting digest for block " << nextRequiredBlock);
+          as_->getPrevDigestFromBlock(nextRequiredBlock,
+                                      reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
+        }
+      };
+      future = pool_.async(task);
+
+      nextRequiredBlock_--;
+      g.txn()->setLastRequiredBlock(nextRequiredBlock_);
+
+      if (lastInBatch) {
+        //  last block in batch - send another FetchBlocksMsg since we havn't reach yet to firstRequiredBlock
+        ConcordAssertEQ(psd_->getLastRequiredBlock(), nextRequiredBlock_);
+        LOG_DEBUG(getLogger(), "Sending FetchBlocksMsg: lastInBatch is true");
+        sendFetchBlocksMsg(psd_->getFirstRequiredBlock(), nextRequiredBlock_, 0);
+        future.get();
+        break;
+      }
+
+      if (lastBlock) {
         // this is the last block we need
         g.txn()->setFirstRequiredBlock(0);
         g.txn()->setLastRequiredBlock(0);
         clearAllPendingItemsData();
         nextRequiredBlock_ = 0;
+        future.get();
         digestOfNextRequiredBlock.makeZero();
 
         ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingResPages);
-
         LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
         sendFetchResPagesMsg(0);
         break;
@@ -2386,7 +2409,7 @@ void BCStateTran::processData() {
 
 void BCStateTran::checkConsistency(bool checkAllBlocks) {
   ConcordAssert(psd_->initialized());
-
+  TimeRecorder scoped_timer(*histograms_.dest_consistency_check_duration);
   const uint64_t lastReachableBlockNum = as_->getLastReachableBlockNum();
   const uint64_t lastBlockNum = as_->getLastBlockNum();
   const uint64_t genesisBlockNum = as_->getGenesisBlockNum();

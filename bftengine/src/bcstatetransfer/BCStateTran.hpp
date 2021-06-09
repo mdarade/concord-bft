@@ -39,6 +39,7 @@
 #include "throughput.hpp"
 #include "diagnostics.h"
 #include "performance_handler.h"
+#include "thread_pool.hpp"
 
 using std::set;
 using std::map;
@@ -51,6 +52,7 @@ using concordMetrics::AtomicCounterHandle;
 using concord::util::Throughput;
 using concord::diagnostics::Recorder;
 using concord::diagnostics::AsyncTimeRecorder;
+// using namespace concord::util;
 
 namespace bftEngine::bcst::impl {
 
@@ -145,6 +147,7 @@ class BCStateTran : public IStateTransfer {
   std::atomic<bool> running_ = false;
   std::unique_ptr<concord::util::Handoff> handoff_;
   IReplicaForStateTransfer* replicaForStateTransfer_ = nullptr;
+  concord::util::ThreadPool pool_{1};
 
   char* buffer_;  // temporary buffer
 
@@ -466,7 +469,7 @@ class BCStateTran : public IStateTransfer {
     Recorders() {
       auto& registrar = concord::diagnostics::RegistrarSingleton::getInstance();
       registrar.perf.registerComponent("state_transfer",
-                                       {fetch_blocks_msg_latency,
+                                       {fetch_blocks_msg_rtt_latency,
                                         on_timer,
                                         handle_state_transfer_msg,
                                         handle_AskForCheckpointSummaries_msg,
@@ -479,10 +482,17 @@ class BCStateTran : public IStateTransfer {
                                         src_get_block_size_bytes,
                                         src_send_batch_duration,
                                         src_send_batch_size_bytes,
-                                        src_send_batch_size_blocks});
+                                        src_send_batch_size_blocks,
+                                        dest_put_block_duration,
+                                        dest_digest_calc_duration,
+                                        source_replica_selection_duration,
+                                        dest_send_fetch_block_duration,
+                                        dest_block_from_chunks_duration,
+                                        dest_find_next_reqd_block_duration,
+                                        dest_consistency_check_duration});
     }
     DEFINE_SHARED_RECORDER(
-        fetch_blocks_msg_latency, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+        fetch_blocks_msg_rtt_latency, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     // main callbacks historgrams
     DEFINE_SHARED_RECORDER(on_timer, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
@@ -507,6 +517,20 @@ class BCStateTran : public IStateTransfer {
         src_send_batch_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(src_send_batch_size_bytes, 1, MAX_BATCH_SIZE_BYTES, 3, concord::diagnostics::Unit::BYTES);
     DEFINE_SHARED_RECORDER(src_send_batch_size_blocks, 1, MAX_BATCH_SIZE_BLOCKS, 3, concord::diagnostics::Unit::COUNT);
+    DEFINE_SHARED_RECORDER(
+        dest_put_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        dest_digest_calc_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        source_replica_selection_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        dest_send_fetch_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        dest_block_from_chunks_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        dest_find_next_reqd_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        dest_consistency_check_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
   };
   Recorders histograms_;
 

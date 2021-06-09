@@ -2779,9 +2779,17 @@ void ReplicaImp::onTransferringCompleteImp(uint64_t newStateCheckpoint) {
 
   sendToAllOtherReplicas(checkpointMsg);
 
+  auto &registrar = concord::diagnostics::RegistrarSingleton::getInstance();
+  registrar.perf.snapshot("sparse_merkle");
+  LOG_INFO(GL, registrar.perf.toString(registrar.perf.get("sparse_merkle")));
   if (!currentViewIsActive()) {
     LOG_INFO(GL, "tryToEnterView after State Transfer finished ...");
-    tryToEnterView();
+    bool rc = tryToEnterView();
+    if (not rc)
+      LOG_INFO(GL, "Failed to enter view.");
+    else
+      registrar.perf.snapshot("replica");
+    LOG_INFO(GL, registrar.perf.toString(registrar.perf.get("replica")));
   }
 }
 
