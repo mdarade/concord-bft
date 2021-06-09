@@ -578,6 +578,7 @@ void DBAdapter::addRawBlock(const RawBlock &block, const BlockId &blockId) {
       LOG_FATAL(logger_, "Aborting due to failure to link chains after block has been added");
       std::terminate();
     }
+
     return;
   }
   // If not adding the next block, treat as a temporary state transfer block.

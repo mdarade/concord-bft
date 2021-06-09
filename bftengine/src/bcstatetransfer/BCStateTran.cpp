@@ -2275,7 +2275,6 @@ void BCStateTran::processData() {
                 "Add block: " << std::boolalpha << "lastBlock=" << lastBlock
                               << KVLOG(nextRequiredBlock_, actualBlockSize) << std::noboolalpha);
 
-      // future = pool_.async([&]() { as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize); });
       std::future<void> future;
 
       auto nextRequiredBlock = nextRequiredBlock_;
