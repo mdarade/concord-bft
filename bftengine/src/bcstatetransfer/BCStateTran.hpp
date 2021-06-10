@@ -488,7 +488,8 @@ class BCStateTran : public IStateTransfer {
                                         dest_send_fetch_block_duration,
                                         dest_block_from_chunks_duration,
                                         dest_find_next_reqd_block_duration,
-                                        dest_consistency_check_duration});
+                                        dest_consistency_check_duration,
+                                        time_spent_in_handoff_queue});
     }
     DEFINE_SHARED_RECORDER(
         fetch_blocks_msg_rtt_latency, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
@@ -530,6 +531,8 @@ class BCStateTran : public IStateTransfer {
         dest_find_next_reqd_block_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
     DEFINE_SHARED_RECORDER(
         dest_consistency_check_duration, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
+    DEFINE_SHARED_RECORDER(
+        time_spent_in_handoff_queue, 1, MAX_VALUE_MICROSECONDS, 3, concord::diagnostics::Unit::MICROSECONDS);
   };
   Recorders histograms_;
 
@@ -542,6 +545,10 @@ class BCStateTran : public IStateTransfer {
   // An array of size MsgTypeLast which holds the total processing time for each message size during ST cycle.
   // index 0 holds the total for all messages
   std::array<uint64_t, MsgType::MsgTypeLast> total_processing_time_microsec_;
+
+  // Record time spent in handoff queue
+  concord::diagnostics::AsyncTimeRecorderMap<SeqNum, true> time_spent_in_handoff_queue_rec_;
+
 };  // namespace bftEngine::bcst::impl
 
 }  // namespace bftEngine::bcst::impl

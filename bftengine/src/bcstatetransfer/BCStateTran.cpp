@@ -238,7 +238,8 @@ BCStateTran::BCStateTran(const Config &config, IAppState *const stateApi, DataSt
       bytes_collected_(get_missing_blocks_summary_window_size),
       first_collected_block_num_({}),
       fetch_block_msg_latency_rec_(histograms_.fetch_blocks_msg_rtt_latency),
-      src_send_batch_duration_rec_(histograms_.src_send_batch_duration) {
+      src_send_batch_duration_rec_(histograms_.src_send_batch_duration),
+      time_spent_in_handoff_queue_rec_(histograms_.time_spent_in_handoff_queue) {
   ConcordAssertNE(stateApi, nullptr);
   ConcordAssertGE(replicas_.size(), 3U * config_.fVal + 1U);
   ConcordAssert(replicas_.count(config_.myReplicaId) == 1 || config.isReadOnly);
@@ -630,6 +631,7 @@ void BCStateTran::startCollectingStats() {
   metrics_.prev_win_bytes_throughtput_.Get().Set(0ull);
 
   fetch_block_msg_latency_rec_.clear();
+  time_spent_in_handoff_queue_rec_.clear();
   memset(&total_processing_time_microsec_, 0, sizeof(total_processing_time_microsec_));
 }
 
@@ -1695,8 +1697,8 @@ bool BCStateTran::onMessage(const ItemDataMsg *m, uint32_t msgLen, uint16_t repl
 
   bool added = false;
 
+  time_spent_in_handoff_queue_rec_.start(m->requestMsgSeqNum);
   tie(std::ignore, added) = pendingItemDataMsgs.insert(const_cast<ItemDataMsg *>(m));
-
   // set fetchingTimeStamp_ while ignoring added flag - source is responsive
   sourceSelector_.setFetchingTimeStamp(getLogger(), getMonotonicTimeMilli());
 
@@ -1951,6 +1953,7 @@ bool BCStateTran::getNextFullBlock(uint64_t requiredBlock,
     ConcordAssertEQ((*it)->blockNumber, requiredBlock);
 
     ItemDataMsg *msg = *it;
+    time_spent_in_handoff_queue_rec_.end(msg->requestMsgSeqNum);
 
     ConcordAssertGE(msg->chunkNumber, 1);
     ConcordAssertEQ(msg->totalNumberOfChunksInBlock, totalNumberOfChunks);
@@ -2274,8 +2277,8 @@ void BCStateTran::processData() {
       LOG_DEBUG(getLogger(),
                 "Add block: " << std::boolalpha << "lastBlock=" << lastBlock
                               << KVLOG(nextRequiredBlock_, actualBlockSize) << std::noboolalpha);
-      
-      //FIXME:mdarade
+
+      // FIXME:mdarade
 
       {
         TimeRecorder scoped_timer(*histograms_.dest_put_block_duration);
