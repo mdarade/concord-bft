@@ -1041,7 +1041,7 @@ void BCStateTran::sendFetchBlocksMsg(uint64_t firstRequiredBlock,
                   msg.lastKnownChunkInLastRequiredBlock));
 
   sourceSelector_.setFetchingTimeStamp(getLogger(), getMonotonicTimeMilli());
-  time_betn_sendFetchBlock_rec_.clear();
+  // time_betn_sendFetchBlock_rec_.clear();
   time_betn_sendFetchBlock_rec_.start();
   replicaForStateTransfer_->sendStateTransferMessage(
       reinterpret_cast<char *>(&msg), sizeof(FetchBlocksMsg), sourceSelector_.currentReplica());
