@@ -2274,7 +2274,43 @@ void BCStateTran::processData() {
       LOG_DEBUG(getLogger(),
                 "Add block: " << std::boolalpha << "lastBlock=" << lastBlock
                               << KVLOG(nextRequiredBlock_, actualBlockSize) << std::noboolalpha);
+      
+      //FIXME:mdarade
 
+      {
+        TimeRecorder scoped_timer(*histograms_.dest_put_block_duration);
+        ConcordAssert(as_->putBlock(nextRequiredBlock_, buffer_, actualBlockSize));
+      }
+      reportCollectingStatus(firstRequiredBlock, actualBlockSize);
+      if (!lastBlock) {
+        as_->getPrevDigestFromBlock(nextRequiredBlock_,
+                                    reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
+        nextRequiredBlock_--;
+        g.txn()->setLastRequiredBlock(nextRequiredBlock_);
+
+        if (lastInBatch) {
+          //  last block in batch - send another FetchBlocksMsg since we havn't reach yet to firstRequiredBlock
+          ConcordAssertEQ(psd_->getLastRequiredBlock(), nextRequiredBlock_);
+          LOG_DEBUG(getLogger(), "Sending FetchBlocksMsg: lastInBatch is true");
+          sendFetchBlocksMsg(psd_->getFirstRequiredBlock(), nextRequiredBlock_, 0);
+          break;
+        }
+      }
+      if (lastBlock) {
+        // this is the last block we need
+        g.txn()->setFirstRequiredBlock(0);
+        g.txn()->setLastRequiredBlock(0);
+        clearAllPendingItemsData();
+        nextRequiredBlock_ = 0;
+        digestOfNextRequiredBlock.makeZero();
+
+        ConcordAssertEQ(getFetchingState(), FetchingState::GettingMissingResPages);
+        LOG_DEBUG(getLogger(), "Moved to GettingMissingResPages");
+        sendFetchResPagesMsg(0);
+        break;
+      }
+
+      /*
       std::future<void> future;
 
       auto nextRequiredBlock = nextRequiredBlock_;
@@ -2285,7 +2321,7 @@ void BCStateTran::processData() {
         }
         reportCollectingStatus(firstRequiredBlock, actualBlockSize);
         if (!lastBlock) {
-          LOG_DEBUG(getLogger(), "mdarade Getting digest for block " << nextRequiredBlock);
+          LOG_DEBUG(getLogger(), "Getting digest for block " << nextRequiredBlock);
           as_->getPrevDigestFromBlock(nextRequiredBlock,
                                       reinterpret_cast<StateTransferDigest *>(&digestOfNextRequiredBlock));
         }
@@ -2319,6 +2355,8 @@ void BCStateTran::processData() {
         sendFetchResPagesMsg(0);
         break;
       }
+      */
+
     }
     //////////////////////////////////////////////////////////////////////////
     // if we have a new vblock
