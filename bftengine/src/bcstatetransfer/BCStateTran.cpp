@@ -698,6 +698,8 @@ void BCStateTran::onTimerImp() {
   }
   if (fs == FetchingState::GettingCheckpointSummaries) {
     if ((currTime - lastTimeSentAskForCheckpointSummariesMsg) > config_.checkpointSummariesRetransmissionTimeoutMs) {
+      LOG_DEBUG(getLogger(),
+                retransmissionNumberOfAskForCheckpointSummariesMsg << kResetCount_AskForCheckpointSummaries);
       if (++retransmissionNumberOfAskForCheckpointSummariesMsg > kResetCount_AskForCheckpointSummaries)
         clearInfoAboutGettingCheckpointSummary();
 
