@@ -487,7 +487,9 @@ BlockId DBAdapter::addBlock(const SetOfKeyValuePairs &updates, const OrderedKeys
   pm_->Delay<concord::performance::SlowdownPhase::StorageBeforeDbWrite>(dbUpdates);
   const auto status = db_->multiPut(dbUpdates);
   if (!status.isOK()) {
-    throw std::runtime_error{"Failed to add block, reason: " + status.toString()};
+    const auto msg = "Failed to add block, reason: " + status.toString();
+    LOG_ERROR(logger_, msg);
+    throw std::runtime_error{msg};
   }
 
   // We've successfully added a block - increment the last reachable block ID.
@@ -521,6 +523,7 @@ void DBAdapter::linkSTChainFrom(BlockId blockId) {
     if (status.isNotFound()) {
       // We don't have a chain from blockId to getLatestBlockId() at that stage. Return success and wait for the
       // missing blocks - they will be added on subsequent calls to addRawBlock().
+      LOG_WARN(logger_, "Tried to link ST chain in absense of block" << KVLOG(i, blockId, latest_block_id));
       return;
     } else if (!status.isOK()) {
       const auto msg = "Failed to get next block data on state transfer, block ID = " + std::to_string(i) +
