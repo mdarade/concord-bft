@@ -645,10 +645,12 @@ bool BCStateTran::loadReservedPage(uint32_t reservedPageId, uint32_t copyLength,
 
 // TODO(TK) check if this function can have its own transaction(bftimpl)
 void BCStateTran::saveReservedPage(uint32_t reservedPageId, uint32_t copyLength, const char *inReservedPage) {
+  if (psd_->getIsFetchingState()) {
+    LOG_WARN(logger_, "Saving reserved page is not allowed during state transfer" << KVLOG(reservedPageId));
+    return;
+  }
   try {
     LOG_DEBUG(logger_, KVLOG(reservedPageId));
-
-    ConcordAssert(!isCollectingState_);
     ConcordAssertLT(reservedPageId, numberOfReservedPages_);
     ConcordAssertLE(copyLength, config_.sizeOfReservedPage);
 
@@ -663,9 +665,12 @@ void BCStateTran::saveReservedPage(uint32_t reservedPageId, uint32_t copyLength,
 
 // TODO(TK) check if this function can have its own transaction(bftimpl)
 void BCStateTran::zeroReservedPage(uint32_t reservedPageId) {
-  LOG_DEBUG(logger_, reservedPageId);
+  if (psd_->getIsFetchingState()) {
+    LOG_WARN(logger_, "Zeroing reserved page is not allowed during state transfer" << KVLOG(reservedPageId));
+    return;
+  }
 
-  ConcordAssert(!isCollectingState_);
+  LOG_DEBUG(logger_, KVLOG(reservedPageId));
   ConcordAssertLT(reservedPageId, numberOfReservedPages_);
 
   metrics_.zero_reserved_page_++;
