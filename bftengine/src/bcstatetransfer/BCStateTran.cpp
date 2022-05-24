@@ -368,7 +368,7 @@ void BCStateTran::initImpl(uint64_t maxNumOfRequiredStoredCheckpoints,
         LOG_INFO(logger_, "State Transfer cycle continues");
         startCollectingStats();
         if ((fs == FetchingState::GettingMissingBlocks) || (fs == FetchingState::GettingMissingResPages)) {
-          SetAllReplicasAsPreferred();
+          setAllReplicasAsPreferred();
         }
 
         if (fs == FetchingState::GettingMissingBlocks) {
@@ -2138,6 +2138,7 @@ bool BCStateTran::onMessage(const FetchResPagesMsg *m, uint32_t msgLen, uint16_t
                                                                              m->msgSeqNum,
                                                                              m->lastCheckpointKnownToRequester,
                                                                              m->requiredCheckpointNum,
+                                                                             psd_->getLastStoredCheckpoint(),
                                                                              m->lastKnownChunk));
 
     metrics_.sent_reject_fetch_msg_++;
@@ -2268,27 +2269,25 @@ bool BCStateTran::onMessage(const RejectFetchingMsg *m, uint32_t msgLen, uint16_
     return false;
   }
 
-  if (sourceSelector_.isPreferredSourceId(replicaId)) {
-    LOG_WARN(logger_, "Removing replica from preferred replicas: " << KVLOG(replicaId));
-    sourceSelector_.removeCurrentReplica();
-    clearAllPendingItemsData();
+  // In case f+1 reject response is received for fetchReservedPage msg having same checkpoint id,
+  // we should move on to next internal cycle.
+  if (fs == FetchingState::GettingMissingResPages) {
+    if (reject_fetching_messages_.size() >= config_.fVal + 1U) {
+      reject_fetching_messages_.clear();
+      sourceSelector_.reset();
+      startCollectingStateInternal();
+      return false;
+    }
+    reject_fetching_messages_[replicaId] = m->requestMsgSeqNum;
   }
 
-  if (sourceSelector_.hasPreferredReplicas()) {
-    processData();
-  } else if (fs == FetchingState::GettingMissingBlocks) {
-    LOG_DEBUG(logger_, "Adding all peer replicas to preferredReplicas_ (because preferredReplicas_.size()==0)");
+  // Infinite loop here on gettingMissingBlocks state
+  // TBD source selector keeps filling preferred replicas list when it removes last entry
+  sourceSelector_.removeCurrentReplica();
+  ConcordAssert(sourceSelector_.hasPreferredReplicas());
+  clearAllPendingItemsData();
+  processData();
 
-    // in this case, we will try to use all other replicas (remove current replica)
-    SetAllReplicasAsPreferred();
-    sourceSelector_.removeCurrentReplica();
-    processData();
-  } else if (fs == FetchingState::GettingMissingResPages) {
-    // enter new cycle
-    startCollectingStateInternal();
-  } else {
-    ConcordAssert(false);
-  }
   return false;
 }
 
@@ -2781,7 +2780,7 @@ set<uint16_t> BCStateTran::allOtherReplicas() {
   return others;
 }
 
-void BCStateTran::SetAllReplicasAsPreferred() { sourceSelector_.setAllReplicasAsPreferred(); }
+void BCStateTran::setAllReplicasAsPreferred() { sourceSelector_.checkAndRefillPreferredReplicas(); }
 
 void BCStateTran::reportCollectingStatus(const uint32_t actualBlockSize, bool toLog) {
   metrics_.overall_blocks_collected_++;
@@ -3090,6 +3089,7 @@ void BCStateTran::stReset(DataStoreTransaction *txn, bool resetRvbm, bool resetS
     std::free(i.second);
   }
   cacheOfVirtualBlockForResPages.clear();
+  reject_fetching_messages_.clear();
   lastTimeSentAskForCheckpointSummariesMsg = 0;
   retransmissionNumberOfAskForCheckpointSummariesMsg = 0;
   for (auto i : summariesCerts) {

@@ -278,6 +278,8 @@ class BCStateTran : public IStateTransfer {
 
   std::unique_ptr<char[]> buffer_;  // general use buffer
 
+  std::map<ReplicaId, uint16_t> reject_fetching_messages_;
+
   // random generator
   std::random_device randomDevice_;
   std::mt19937 randomGen_;
@@ -475,7 +477,7 @@ class BCStateTran : public IStateTransfer {
   void cycleEndSummary();
   void onGettingMissingBlocksEnd(DataStoreTransaction* txn);
   set<uint16_t> allOtherReplicas();
-  void SetAllReplicasAsPreferred();
+  void setAllReplicasAsPreferred();
 
   ///////////////////////////////////////////////////////////////////////////
   // Helper methods

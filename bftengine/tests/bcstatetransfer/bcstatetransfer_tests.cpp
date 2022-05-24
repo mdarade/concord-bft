@@ -1703,6 +1703,47 @@ TEST_F(BcStTest, dstSendPrePrepareMsgsDuringStateTransfer) {
   ASSERT_NFF(dstValidateCycleEnd(10));
 }
 
+TEST_F(BcStTest, dstsendPrePrepareToOnlyPreferredReplicaActingAsPrimary) {
+  ASSERT_NFF(initialize());
+  std::once_flag once_flag;
+  ASSERT_NFF(dstStartRunningAndCollecting());
+  ASSERT_NFF(fakeSrcReplica_->replyAskForCheckpointSummariesMsg());
+  auto ss = stDelegator_->getSourceSelector();
+  const std::function<void(void)> trigger_graceful_source_change = [&]() {
+    std::call_once(once_flag, [&] {
+      std::unique_ptr<MessageBase> msg;
+      // Generate prePrepare messages to trigger source selector to change the source to avoid primary.
+      ASSERT_NFF(msg = dataGen_->generatePrePrepareMsg(ss.currentReplica()));
+      for (uint16_t i = 1; i <= targetConfig_.minPrePrepareMsgsForPrimaryAwareness; i++) {
+        stateTransfer_->handleIncomingConsensusMessage(ConsensusMsg(msg->type(), msg->senderId()));
+      }
+    });
+  };
+
+  // remove all replica's from preferred list except one
+  while (ss.numberOfPreferredReplicas() != 1) {
+    ss.updateSource(getMonotonicTimeMilli());
+  }
+
+  // make the only preferred replica as primary
+  trigger_graceful_source_change();
+  ASSERT_EQ(ss.numberOfPreferredReplicas(), 1);
+
+  // replacement of source acting as primary is graceful thats why metric count is expected as 0
+  ASSERT_NFF(getMissingblocksStage(EMPTY_FUNC, EMPTY_FUNC));
+  const auto& sources = stDelegator_->getSourceSelector().getActualSources();
+  ASSERT_EQ(sources.size(), 1);
+  validateSourceSelectorMetricCounters({{"total_replacements_", 3},
+                                        {"replacement_due_to_no_source_", 1},
+                                        {"replacement_due_to_source_same_as_primary_", 0},
+                                        {"replacement_due_to_periodic_change_", 0},
+                                        {"replacement_due_to_retransmission_timeout_", 0},
+                                        {"replacement_due_to_bad_data_", 0}});
+  ASSERT_NFF(getReservedPagesStage());
+  // validate completion
+  ASSERT_NFF(dstValidateCycleEnd(10));
+}
+
 TEST_F(BcStTest, dstPreprepareFromMultipleSourcesDuringStateTransfer) {
   ASSERT_NFF(initialize());
   std::once_flag once_flag;
