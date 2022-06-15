@@ -88,8 +88,6 @@ std::vector<std::pair<BlockId, Digest>> InMemoryDataStore::getPrunedBlocksDigest
 
 void InMemoryDataStore::setCheckpointDesc(uint64_t checkpoint, const CheckpointDesc& desc) {
   ConcordAssert(checkpoint == desc.checkpointNum);
-  ConcordAssert(descMap.count(checkpoint) == 0);
-
   descMap[checkpoint] = desc;
 
   //  ConcordAssert(descMap.size() < 21);  // TODO(GG): delete - debug only
@@ -237,9 +235,10 @@ void InMemoryDataStore::setResPage(uint32_t inPageId,
                                    const char* inPage) {
   auto lock = std::unique_lock(reservedPagesLock_);
   LOG_DEBUG(logger(), "pageId: " << inPageId << " checkpoint: " << inCheckpoint);
-  // create key, and make sure that we don't already have this element
+  // create key
+  // pages may already contain key when restarted replica asks and gets
+  // last stored checkpoint from network which is also stopped at same checkpoint
   ResPageKey key = {inPageId, inCheckpoint};
-  ConcordAssert(pages.count(key) == 0);
 
   // prepare page
   char* page = reinterpret_cast<char*>(std::malloc(sizeOfReservedPage_));

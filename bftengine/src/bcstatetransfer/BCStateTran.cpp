@@ -1214,7 +1214,7 @@ bool BCStateTran::checkStructureOfVirtualBlock(char *virtualBlock,
     char *p = virtualBlock + sizeof(HeaderOfVirtualBlock) + (i * elementSize);
     ElementOfVirtualBlock *e = reinterpret_cast<ElementOfVirtualBlock *>(p);
 
-    if (e->checkpointNumber <= h->lastCheckpointKnownToRequester) {
+    if (e->checkpointNumber < h->lastCheckpointKnownToRequester) {
       LOG_ERROR(logger, KVLOG(e->checkpointNumber, h->lastCheckpointKnownToRequester, i, e->pageId));
       return false;
     }
@@ -1488,7 +1488,10 @@ void BCStateTran::sendAskForCheckpointSummariesMsg() {
   SCOPED_MDC_SEQ_NUM(getScopedMdcStr(config_.myReplicaId, lastMsgSeqNum_));
 
   msg.msgSeqNum = lastMsgSeqNum_;
-  msg.minRelevantCheckpointNum = psd_->getLastStoredCheckpoint() + 1;
+  // Abruptly restarted fetcher replica might have last-stored-checkpoint same as what *stopped* network would have.
+  // In case fetcher asks for last-stored-checkpoint + 1, consensus network may reject such request thinking it doesn't
+  // have requested checkpoint.
+  msg.minRelevantCheckpointNum = psd_->getLastStoredCheckpoint() ? psd_->getLastStoredCheckpoint() : 1;
 
   LOG_INFO(logger_, KVLOG(lastMsgSeqNum_, msg.minRelevantCheckpointNum));
 
@@ -1663,7 +1666,7 @@ bool BCStateTran::onMessage(const CheckpointSummaryMsg *m, uint32_t msgLen, uint
   }
 
   // if msg is not relevant
-  if (m->requestMsgSeqNum != lastMsgSeqNum_ || m->checkpointNum <= psd_->getLastStoredCheckpoint()) {
+  if (m->requestMsgSeqNum != lastMsgSeqNum_ || m->checkpointNum < psd_->getLastStoredCheckpoint()) {
     LOG_WARN(logger_,
              "Msg is irrelevant: " << KVLOG(
                  replicaId, m->requestMsgSeqNum, lastMsgSeqNum_, m->checkpointNum, psd_->getLastStoredCheckpoint()));
@@ -3521,7 +3524,7 @@ void BCStateTran::processData(bool lastInBatch, uint32_t rvbDigestsSize) {
           // Mark completion of GettingMissingResPages stage
           ConcordAssert(g.txn()->hasCheckpointBeingFetched());
           DataStore::CheckpointDesc cp = g.txn()->getCheckpointBeingFetched();
-          ConcordAssertGT(targetCheckpointDesc_.checkpointNum, g.txn()->getLastStoredCheckpoint());
+          ConcordAssertGE(targetCheckpointDesc_.checkpointNum, g.txn()->getLastStoredCheckpoint());
           ConcordAssertEQ(targetCheckpointDesc_.checkpointNum, cp.checkpointNum);
           ConcordAssertEQ(g.txn()->getFirstRequiredBlock(), 0);
           ConcordAssertEQ(g.txn()->getLastRequiredBlock(), 0);
