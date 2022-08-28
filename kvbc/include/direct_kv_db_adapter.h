@@ -144,7 +144,7 @@ class DBAdapter : public IDbAdapter {
   // - adding the key/value pairs in separate keys
   // - adding the whole block (raw block) in its own key.
   // Typically called by state transfer when a block is received and needs to be added.
-  void addRawBlock(const RawBlock &, const BlockId &, bool lastBlock = false) override;
+  void addRawBlock(const RawBlock &, const BlockId &, bool lastBlock = false) noexcept override;
 
   std::pair<Value, BlockId> getValue(const Key &, const BlockId &blockVersion) const override;
 

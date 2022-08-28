@@ -253,26 +253,35 @@ KeyValuePair Client::Iterator::seek(const Sliver& prefix) {
   iterator_ = cb_data_.results.begin() + prevKeyCount;
   return getCurrent();
 }
+
 void Client::Transaction::commit() {
   static logging::Logger logger_ = logging::getLogger("concord.storage.s3");
+  auto transaction_id = getIdStr();
   try {
     auto client = std::dynamic_pointer_cast<Client>(client_);
-    std::vector<std::future<concordUtils::Status>> futures;
-    for (auto& pair : multiput_)
-      futures.emplace_back(client->thread_pool_.async([pair, client] { return client->put(pair.first, pair.second); }));
-    for (auto& key : keys_to_delete_)
-      futures.emplace_back(client->thread_pool_.async([key, client] { return client->del(key); }));
-    for (auto& f : futures) {
-      concordUtils::Status s = f.get();
-      LOG_TRACE(logger_, "status: " << s.toString());
-      if (s != concordUtils::Status::OK()) {
-        throw std::runtime_error(__PRETTY_FUNCTION__ + std::string(" txn id[") + getIdStr() +
-                                 std::string("], failed, status: ") + s.toString());
+    std::vector<std::pair<std::future<concordUtils::Status>, std::string>> futures;
+    LOG_DEBUG(logger_, KVLOG(transaction_id, multiput_.size(), keys_to_delete_.size()));
+    for (auto& kv : multiput_) {
+      futures.emplace_back(std::make_pair(
+          client->thread_pool_.async([kv, client] { return client->put(kv.first, kv.second); }), kv.first.toString()));
+    }
+    for (auto& key : keys_to_delete_) {
+      futures.emplace_back(
+          std::make_pair(client->thread_pool_.async([key, client] { return client->del(key); }), key.toString()));
+    }
+    for (auto& future : futures) {
+      concordUtils::Status transaction_status = future.first.get();
+      auto key = future.second;
+      LOG_DEBUG(logger_, KVLOG(transaction_id, key, transaction_status.toString()));
+      if (transaction_status != concordUtils::Status::OK()) {
+        std::string error_msg = __PRETTY_FUNCTION__ + std::string(" transaction_id:") + transaction_id +
+                                std::string(" failed, status:") + transaction_status.toString();
+        throw std::runtime_error(error_msg);
       }
     }
-    LOG_DEBUG(logger_, "txn id[" + getIdStr() + std::string("] success"));
+    LOG_DEBUG(logger_, KVLOG(transaction_id) + " successful");
   } catch (const std::exception& e) {
-    LOG_ERROR(logger_, "txn id[" + getIdStr() + std::string("] failure, reason: ") << e.what());
+    LOG_ERROR(logger_, KVLOG(transaction_id, e.what()));
     throw;
   }
 }

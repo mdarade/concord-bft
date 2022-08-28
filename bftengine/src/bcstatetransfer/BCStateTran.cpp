@@ -3020,12 +3020,7 @@ bool BCStateTran::finalizePutblockAsync(PutBlockWaitPolicy waitPolicy, DataStore
     }
     // currently, fetch must wait to commit before moving into the next batch, so the next assert must always be true
     ConcordAssertEQ(ctx->blockId, commitState_.nextBlockId);
-    try {
-      ConcordAssertEQ(ctx->future.get(), true);
-    } catch (const std::exception &e) {
-      LOG_FATAL(logger_, e.what());
-      ConcordAssert(false);
-    }
+    ConcordAssertEQ(ctx->future.get(), true);
 
     LOG_DEBUG(logger_, "Block Committed (written to ST blockchain):" << KVLOG(ctx->blockId));
 

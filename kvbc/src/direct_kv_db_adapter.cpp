@@ -406,7 +406,7 @@ BlockId DBAdapter::addBlock(const SetOfKeyValuePairs &kv) {
   return blockId;
 }
 
-void DBAdapter::addRawBlock(const RawBlock &block, const BlockId &blockId, bool lastBlock) {
+void DBAdapter::addRawBlock(const RawBlock &block, const BlockId &blockId, bool lastBlock) noexcept {
   SetOfKeyValuePairs keys;
   if (saveKvPairsSeparately_ && block.length() > 0) {
     std::optional<concord::kvbc::categorization::CategoryInput> categoryInput;
@@ -436,9 +436,11 @@ void DBAdapter::addRawBlock(const RawBlock &block, const BlockId &blockId, bool 
     }
   }
 
-  if (Status s = addBlockAndUpdateMultiKey(keys, blockId, block); !s.isOK()) {
-    throw std::runtime_error(__PRETTY_FUNCTION__ + std::string(": failed: blockId: ") + std::to_string(blockId) +
-                             std::string(" reason: ") + s.toString());
+  if (Status status = addBlockAndUpdateMultiKey(keys, blockId, block); !status.isOK()) {
+    // We have enough information here about exception raised from s3 put failure
+    // No need to propogate failure to upper layers
+    LOG_ERROR(logger_, std::boolalpha << KVLOG(blockId, lastBlock, status.toString()));
+    return;
   }
 
   // when ST runs, blocks arrive in batches in reverse order. we need to keep

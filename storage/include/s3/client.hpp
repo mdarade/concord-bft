@@ -274,7 +274,11 @@ class Client : public concord::storage::IDBClient {
 
   concordUtils::Status multiPut(const SetOfKeyValuePairs& _keyValueMap, bool sync = false) override {
     ITransaction::Guard g(beginTransaction());
-    for (auto&& pair : _keyValueMap) g.txn()->put(pair.first, pair.second);
+    for (auto&& kv : _keyValueMap) {
+      auto transaction_id = g.txn()->getIdStr();
+      LOG_DEBUG(logger_, KVLOG(transaction_id, kv.first.string_view()));
+      g.txn()->put(kv.first, kv.second);
+    }
     return concordUtils::Status::OK();
   }
 
@@ -332,7 +336,7 @@ class Client : public concord::storage::IDBClient {
       return Status::OK();
     }
     if (S3_status_is_not_found(rd.status)) {
-      LOG_DEBUG(logger_, msg << "not found, status: " << rd.status << " error: " << rd.errorMessage);
+      LOG_ERROR(logger_, msg << "not found, status: " << rd.status << " error: " << rd.errorMessage);
       return Status::NotFound("Status: " + rd.errorMessage);
     }
     LOG_ERROR(logger_, msg << " status: " << rd.status << " error: " << rd.errorMessage);
