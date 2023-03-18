@@ -150,12 +150,16 @@ class ReplicaConfig : public concord::serialize::SerializableFactory<ReplicaConf
   // Reconfiguration credentials
   CONFIG_PARAM(pathToOperatorPublicKey_, std::string, "", "Path to the operator public key pem file");
   CONFIG_PARAM(operatorEnabled_, bool, true, "true if operator is enabled");
+
   // Pruning parameters
   CONFIG_PARAM(pruningEnabled_, bool, false, "Enable pruning");
   CONFIG_PARAM(numBlocksToKeep_, uint64_t, 0, "how much blocks to keep while pruning");
 
   CONFIG_PARAM(debugPersistentStorageEnabled, bool, false, "whether persistent storage debugging is enabled");
   CONFIG_PARAM(deleteMetricsDumpInterval, uint64_t, 300, "delete metrics dump interval (s)");
+
+  // Storage
+  CONFIG_PARAM(ethDeployment, bool, false, "Ethereum deployment?");
 
   // Messages
   CONFIG_PARAM(maxExternalMessageSize, uint32_t, 131072, "maximum size of external message");
@@ -385,6 +389,7 @@ class ReplicaConfig : public concord::serialize::SerializableFactory<ReplicaConf
 
     serialize(outStream, debugPersistentStorageEnabled);
     serialize(outStream, deleteMetricsDumpInterval);
+    serialize(outStream, ethDeployment);
     serialize(outStream, maxExternalMessageSize);
     serialize(outStream, maxReplyMessageSize);
     serialize(outStream, maxNumOfReservedPages);
@@ -487,6 +492,7 @@ class ReplicaConfig : public concord::serialize::SerializableFactory<ReplicaConf
 
     deserialize(inStream, debugPersistentStorageEnabled);
     deserialize(inStream, deleteMetricsDumpInterval);
+    deserialize(inStream, ethDeployment);
     deserialize(inStream, maxExternalMessageSize);
     deserialize(inStream, maxReplyMessageSize);
     deserialize(inStream, maxNumOfReservedPages);
@@ -627,7 +633,8 @@ inline std::ostream& operator<<(std::ostream& os, const ReplicaConfig& rc) {
               rc.useUnifiedCertificates,
               rc.kvBlockchainVersion,
               replicaMsgSignAlgo,
-              operatorMsgSignAlgo);
+              operatorMsgSignAlgo,
+              rc.ethDeployment);
   os << ", ";
   for (auto& [param, value] : rc.config_params_) os << param << ": " << value << "\n";
   return os;
